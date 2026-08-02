@@ -1,0 +1,42 @@
+{
+  "name": "Ocimum basilicum",
+  "ecocrop_id": 1547,
+  "temperature_c": {
+    "opt_min": 18,
+    "opt_max": 27,
+    "abs_min": 7,
+    "abs_max": 36
+  },
+  "rainfall_mm_yr": {
+    "opt_min": 1000,
+    "opt_max": 1600,
+    "abs_min": 600,
+    "abs_max": 4300
+  },
+  "soil_ph": {
+    "opt_min": 6,
+    "opt_max": 7,
+    "abs_min": 4.3,
+    "abs_max": 8.2
+  },
+  "crop_cycle_days": {
+    "min": 80,
+    "max": 270
+  },
+  "climate_zones": [
+    "tropical wet & dry (Aw)",
+    "tropical wet (Ar)",
+    "subtropical humid (Cf)",
+    "subtropical dry summer (Cs)",
+    "subtropical dry winter (Cw)",
+    "temperate oceanic (Do)"
+  ],
+  "_source": {
+    "provider": "FAO ECOCROP",
+    "url": "https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547",
+    "accessed": "2026-08-01",
+    "attribution": "© FAO ECOCROP",
+    "license_note": "Non-commercial research use with attribution per FAO Terms and Conditions (https://www.fao.org/contact-us/terms/en/)."
+  },
+  "common_name": "basil"
+}
