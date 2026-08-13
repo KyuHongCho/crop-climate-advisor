@@ -1,5 +1,7 @@
 # Crop-Climate Advisor
 
+[![CI](https://github.com/KyuHongCho/crop-climate-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/KyuHongCho/crop-climate-advisor/actions/workflows/ci.yml)
+
 Given a **crop** and a **location**, retrieve the crop's agronomic requirements and the
 location's real climate, then reason about **suitability** and what a controlled-environment
 growing chamber would need to correct for any gap.
