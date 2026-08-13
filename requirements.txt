@@ -1,1 +1,7 @@
 certifi>=2024.0.0
+# Pinned to the v1.x line: v2.0.0 (2026-07-28) removed FastMCP in favour of
+# MCPServer. Upstream recommends a <2 bound until migrating.
+mcp>=1.29,<2
+# Imported directly by mcp_server.py (to offload the blocking HTTP call to a
+# thread), so declared here rather than relied on as an mcp transitive dep.
+anyio>=4.5

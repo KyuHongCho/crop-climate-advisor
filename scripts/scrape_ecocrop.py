@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """One-time scraper for FAO ECOCROP numeric crop requirements.
 
-Per decision ticket 05 (`.scratch/phase-1-spec/issues/05-*`): ECOCROP's numeric
-fields are scraped ONCE into a bundled JSON lookup rather than fetched live per
-request. Run this to (re)generate `data/ecocrop/<slug>.json`.
+ECOCROP's numeric fields are scraped ONCE into a bundled JSON lookup rather than
+fetched live per request: the values are static reference data, and caching them
+bounds the load placed on a free third-party service. Run this to (re)generate
+`data/ecocrop/<slug>.json`.
 
 Data © FAO ECOCROP, used for non-commercial research with attribution
 (see FAO Terms and Conditions: https://www.fao.org/contact-us/terms/en/).

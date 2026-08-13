@@ -8,8 +8,10 @@ A small project exploring how to combine **retrieval over structured agronomic d
 **live climate-data tool call (MCP)**, and **Agent Skills** into an honest decision-support
 tool — built as real, working code with transparently reported status.
 
-> **Status: Stage 0 (early). Building in progress — not finished.**
-> A working end-to-end slice runs today for **basil**. See [What works / What's planned](#what-works--whats-planned).
+> **Status: early. Building in progress — not finished.**
+> A working end-to-end slice runs today for **basil**, and the NASA POWER climate lookup is
+> exposed as an **MCP server**. The second crop, the eval harness, the RAG layer, and the
+> Agent Skill are **not built**. See [What works / What's planned](#what-works--whats-planned).
 > This README describes only what actually runs; planned work is labelled as such.
 
 ## What works / what's planned
@@ -20,22 +22,30 @@ tool — built as real, working code with transparently reported status.
 | ✅ | Structured crop-requirements lookup — FAO ECOCROP, scraped once → bundled JSON | **working** (basil) |
 | ✅ | Suitability + chamber-correction reasoning (temperature, rainfall) | **working** |
 | ✅ | CLI + offline unit tests | **working** |
-| ⏳ | Second crop (*Catharanthus roseus*, ECOCROP id 652) | planned (Stage 1) |
-| ⏳ | Eval harness — flag the basil optimal-temp source discrepancy (see below) | planned (Stage 1) |
-| ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned (Stage 1) |
-| ⏳ | NASA POWER wrapped as an **MCP server** | planned (Stage 2) |
-| ⏳ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | planned (Stage 2) |
+| ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
+| ⏳ | Second crop (*Catharanthus roseus*, ECOCROP id 652) | planned |
+| ⏳ | Eval harness — flag the basil optimal-temp source discrepancy (see below) | planned |
+| ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
+| ⏳ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | planned |
 
 ## Quickstart
 
 ```bash
-pip install -r requirements.txt          # just `certifi` (for TLS verification)
+# Requires Python 3.10+ (the `mcp` SDK does; macOS's stock /usr/bin/python3 is 3.9 and won't work)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # certifi (TLS), mcp (the MCP SDK), anyio
 
 # Assess basil at a location (live NASA POWER call):
 python3 -m crop_advisor.cli --crop basil --lat 51.5 --lon -0.13 --place London
 
-# Run the offline unit tests:
+# Run the MCP server (stdio; speaks the Model Context Protocol on stdin/stdout):
+python3 -m crop_advisor.mcp_server
+
+# Run the offline unit tests (no network):
 python3 -m unittest discover -s tests
+
+# Also run the live NASA POWER test (opt-in; makes a real API call):
+CROP_ADVISOR_LIVE_TESTS=1 python3 -m unittest discover -s tests
 
 # Regenerate the bundled ECOCROP data (one-time scrape):
 python3 scripts/scrape_ecocrop.py --id 1547 --slug basil --common-name basil
@@ -87,8 +97,33 @@ rather than silently picking one — a real, pre-identified benchmark, not a syn
 ## Project layout
 
 ```
-crop_advisor/           # the app: climate.py, ecocrop.py, suitability.py, cli.py
+crop_advisor/           # the app: climate.py, ecocrop.py, suitability.py, cli.py,
+                        #          mcp_server.py (MCP wrapper around the climate call)
 data/ecocrop/           # bundled, scraped-once crop requirements (JSON)
 scripts/scrape_ecocrop.py   # one-time ECOCROP scraper
-tests/                  # offline unit tests for the suitability logic
+tests/                  # offline unit tests (+ one opt-in live NASA POWER test)
 ```
+
+## The MCP server
+
+`crop_advisor/mcp_server.py` exposes one tool, `get_climate(lat, lon)`, over the
+Model Context Protocol using the official Python SDK (`FastMCP`, stdio transport).
+It is a thin adapter: it wraps the existing `fetch_climate()` and adds no climate
+logic of its own. The tool returns the full climate summary — annual and monthly
+mean temperature, warmest-month temperature, annual precipitation, and the source
+string — as structured content. The return type is a `TypedDict`, so all seven
+fields and their types appear in the tool's `outputSchema`, and a client can
+discover the shape without calling it.
+
+The tool is `async` and offloads the blocking HTTP call to a worker thread. This
+matters: `FastMCP` 1.x runs a *sync* tool inline on the event loop, so a slow
+NASA POWER response would otherwise freeze the whole server — every other
+request, including cancellation — for up to the 30s timeout.
+
+The SDK is pinned to `mcp>=1.29,<2`. Version 2.0.0 (released 2026-07-28) replaced
+`FastMCP` with `MCPServer`; upstream recommends a `<2` bound until migrating, and
+the migration for a stdio server this small is a two-line change.
+
+Tests drive the server through a real MCP client session (`initialize` →
+`list_tools` → `call_tool`) rather than calling the Python function directly — a
+direct call would exercise `fetch_climate`, not the MCP layer.
