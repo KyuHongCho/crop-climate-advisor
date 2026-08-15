@@ -86,15 +86,31 @@ Each of these was a deliberate, recorded design decision rather than an incident
 
 ## The eval case (planned)
 
-ECOCROP lists basil's optimal temperature as **18–27 °C**; a peer-reviewed source gives **25–30 °C**.
-The planned eval harness checks that the system **notices and flags** this cross-source disagreement
-rather than silently picking one — a real, pre-identified benchmark, not a synthetic one.
+Three sources give three different optimal temperature ranges for basil:
+
+| Source | Optimal | Stated condition |
+|---|---|---|
+| FAO ECOCROP (id 1547) | 18–27 °C | none stated |
+| Chang et al. (2005), via [Barickman et al. 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/) | 25–30 °C | DLI 20–22 mol·m⁻²·d⁻¹ |
+| Walters & Currey (2019), via [Walters et al. 2023](https://doi.org/10.1371/journal.pone.0294905) | 29–35 °C | DLI 19.5 mol·m⁻²·d⁻¹ |
+
+No single window satisfies all three — 18–27 and 25–30 overlap at 25–27, but 29–35 does not intersect
+ECOCROP's range at all. The ranges are also not strictly comparable: the two journal figures are
+conditioned on a stated daily light integral (DLI), while ECOCROP states none.
+
+The planned eval harness checks that the system **notices and flags** this disagreement rather than
+silently picking one — a real, pre-identified benchmark, not a synthetic one.
 
 ## Data sources & attribution
 
 - **Climate:** [NASA POWER](https://power.larc.nasa.gov/) climatology API (T2M, PRECTOTCORR).
 - **Crop requirements:** © **FAO ECOCROP** — used for non-commercial research with attribution,
   per [FAO Terms and Conditions](https://www.fao.org/contact-us/terms/en/).
+- **Basil temperature benchmark (planned eval):** Barickman et al. (2021), *Plants* 10(6):1072,
+  doi:10.3390/plants10061072 ([open access via PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/)) — CC BY 4.0. The 25–30 °C
+  figure originates with Chang, Alderson & Wright (2005), *J. Hortic. Sci. Biotechnol.* 80:593–598;
+  the 29–35 °C figure with Walters & Currey (2019), *HortScience* 54(11):1915. Both are cited here
+  **via** the open-access papers linked above, which is how they were verified.
 
 ## Project layout
 
