@@ -11,9 +11,11 @@ A small project exploring how to combine **retrieval over structured agronomic d
 tool — built as real, working code with transparently reported status.
 
 > **Status: early. Building in progress — not finished.**
-> A working end-to-end slice runs today for **basil**, and the NASA POWER climate lookup is
-> exposed as an **MCP server**. The second crop, the eval harness, the RAG layer, and the
-> Agent Skill are **not built**. See [What works / What's planned](#what-works--whats-planned).
+> A working end-to-end slice runs today for **basil** — including its optimal temperature reported
+> as three attributed, disagreeing published claims rather than one — and the NASA POWER climate
+> lookup is exposed as an **MCP server**. The second crop, the eval harness that would *score* how
+> that disagreement is handled, the RAG layer, and the Agent Skill are **not built**.
+> See [What works / What's planned](#what-works--whats-planned).
 > This README describes only what actually runs; planned work is labelled as such.
 
 ## What works / what's planned
@@ -25,8 +27,9 @@ tool — built as real, working code with transparently reported status.
 | ✅ | Suitability + chamber-correction reasoning (temperature, rainfall) | **working** |
 | ✅ | CLI + offline unit tests | **working** |
 | ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
+| ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — the CLI prints all three and derives from their intersection that no single window satisfies them all |
 | ⏳ | Second crop (*Catharanthus roseus*, ECOCROP id 652) | planned |
-| ⏳ | Eval harness — flag the basil optimal-temp source discrepancy (see below) | planned |
+| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | planned |
 | ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
 | ⏳ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | planned |
 
@@ -56,16 +59,30 @@ python3 scripts/scrape_ecocrop.py --id 1547 --slug basil --common-name basil
 Example output (basil @ London):
 
 ```
+Crop-Climate Advisor — basil @ London
+========================================================
 Location climate (NASA POWER): annual mean 10.39 °C, warmest month 17.63 °C, annual precip 708.6 mm
-Crop needs (FAO ECOCROP id 1547): temp opt 18–27 °C, rain opt 1000–1600 mm/yr
+Crop needs — temperature: no single window satisfies all 3 published sources; every claim is listed below.
+Crop needs — rainfall (FAO ECOCROP id 1547): opt 1000–1600 mm/yr
 
-  temperature  10.39 °C     → SURVIVABLE  (needs +7.6 °C to reach optimal)
+  temperature  10.39 °C     → each published optimal window, and the change it would need:
+      18–27 °C  → needs +7.6 °C   FAO ECOCROP (id 1547)  [no condition stated]
+      25–30 °C  → needs +14.6 °C  Chang, Alderson & Wright (2005)  [at DLI 20–22 mol·m⁻²·d⁻¹]
+      29–35 °C  → needs +18.6 °C  Walters & Currey (2019)  [at DLI 19.5 mol·m⁻²·d⁻¹]
   rainfall     708.6 mm/yr  → SURVIVABLE  (needs +291.4 mm/yr to reach optimal)
-  note: even the warmest month stays below the crop's optimal minimum.
+  note: even the warmest month stays below FAO ECOCROP's optimal minimum.
 
-Verdict: Basil is marginal outdoors at London; a controlled-environment chamber
-would need to close the gaps below.
+Verdict (on FAO ECOCROP's bands): Basil is marginal outdoors at London; a controlled-environment chamber would need to close the gaps below.
+
+Data: NASA POWER (climate) · © FAO ECOCROP (crop requirements).
+Temperature claims:
+  · FAO ECOCROP data sheet, id 1547 (read directly): https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547
+  · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Barickman et al. (2021), Plants 10(6):1072): https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/
+  · Walters & Currey (2019), HortScience 54(11):1915 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
 ```
+
+This block is not hand-written: `tests/test_cli_format.py` extracts it from this README and
+asserts it equals what the CLI actually prints, so it cannot drift.
 
 ## Architecture & design decisions
 
@@ -84,7 +101,7 @@ would need to close the gaps below.
 
 Each of these was a deliberate, recorded design decision rather than an incidental choice.
 
-## The eval case (planned)
+## The eval case
 
 Three sources give three different optimal temperature ranges for basil:
 
@@ -98,15 +115,24 @@ No single window satisfies all three — 18–27 and 25–30 overlap at 25–27,
 ECOCROP's range at all. The ranges are also not strictly comparable: the two journal figures are
 conditioned on a stated daily light integral (DLI), while ECOCROP states none.
 
-The planned eval harness checks that the system **notices and flags** this disagreement rather than
-silently picking one — a real, pre-identified benchmark, not a synthetic one.
+**What runs today:** the CLI reports all three of these claims side by side — each with its stated
+condition, and, for the two it could not read directly, the open-access paper it *was* read through.
+The "no single window" sentence above is computed from the three bands rather than asserted
+(`crop_advisor/claims.py`); if the sources ever did overlap, the CLI would name the overlap instead.
+Nothing picks a winner.
+
+**What is still planned:** the eval harness itself — a scored, repeatable run that checks the system
+**notices and flags** this disagreement rather than silently picking one. A real, pre-identified
+benchmark, not a synthetic one. Reporting the three claims (above) is not yet the same as being
+scored on handling them.
 
 ## Data sources & attribution
 
 - **Climate:** [NASA POWER](https://power.larc.nasa.gov/) climatology API (T2M, PRECTOTCORR).
 - **Crop requirements:** © **FAO ECOCROP** — used for non-commercial research with attribution,
   per [FAO Terms and Conditions](https://www.fao.org/contact-us/terms/en/).
-- **Basil temperature benchmark (planned eval):** Barickman et al. (2021), *Plants* 10(6):1072,
+- **Basil optimal-temperature claims** — cited in the CLI's own output (see the example above):
+  Barickman et al. (2021), *Plants* 10(6):1072,
   doi:10.3390/plants10061072 ([open access via PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/)) — CC BY 4.0. The 25–30 °C
   figure originates with Chang, Alderson & Wright (2005), *J. Hortic. Sci. Biotechnol.* 80:593–598;
   the 29–35 °C figure with Walters & Currey (2019), *HortScience* 54(11):1915. Both are cited here
@@ -116,6 +142,7 @@ silently picking one — a real, pre-identified benchmark, not a synthetic one.
 
 ```
 crop_advisor/           # the app: climate.py, ecocrop.py, suitability.py, cli.py,
+                        #          claims.py (published temperature claims + provenance),
                         #          mcp_server.py (MCP wrapper around the climate call)
 data/ecocrop/           # bundled, scraped-once crop requirements (JSON)
 scripts/scrape_ecocrop.py   # one-time ECOCROP scraper

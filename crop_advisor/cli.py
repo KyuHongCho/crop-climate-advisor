@@ -5,32 +5,69 @@ Example:
 """
 import argparse
 
+from .claims import cite, consensus, temperature_claims
 from .climate import fetch_climate
 from .ecocrop import available_crops, load_crop
-from .suitability import Assessment, assess
+from .suitability import Assessment, _assess_band, assess
+
+
+def _num(value) -> str:
+    """Render a band edge without a pointless trailing '.0' (18.0 -> '18')."""
+    f = float(value)
+    return str(int(f)) if f.is_integer() else str(f)
+
+
+def _agreement(claims) -> str:
+    """One clause describing whether the claims share any window at all.
+
+    Derived from consensus(): if the sources ever did agree, this names the
+    window they agree on instead.
+    """
+    agreed = consensus(claims)
+    if agreed is None:
+        return f"no single window satisfies all {len(claims)} published sources"
+    return f"all {len(claims)} published sources are satisfied by {_num(agreed[0])}–{_num(agreed[1])} °C"
 
 
 def _format(a: Assessment, crop: dict, climate) -> str:
+    claims = temperature_claims(crop)
     lines = []
     lines.append(f"Crop-Climate Advisor — {a.crop} @ {a.place}")
     lines.append("=" * 56)
     lines.append(f"Location climate (NASA POWER): annual mean {climate.annual_mean_temp_c} °C, "
                  f"warmest month {climate.warmest_month_temp_c} °C, "
                  f"annual precip {climate.annual_precip_mm} mm")
-    lines.append(f"Crop needs (FAO ECOCROP id {crop.get('ecocrop_id')}): "
-                 f"temp opt {crop['temperature_c']['opt_min']}–{crop['temperature_c']['opt_max']} °C, "
-                 f"rain opt {crop['rainfall_mm_yr']['opt_min']}–{crop['rainfall_mm_yr']['opt_max']} mm/yr")
+    lines.append(f"Crop needs — temperature: {_agreement(claims)}; every claim is listed below.")
+    lines.append(f"Crop needs — rainfall (FAO ECOCROP id {crop.get('ecocrop_id')}): "
+                 f"opt {crop['rainfall_mm_yr']['opt_min']}–{crop['rainfall_mm_yr']['opt_max']} mm/yr")
     lines.append("")
     for b in (a.temperature, a.rainfall):
+        if b.metric == "temperature":
+            lines.append(f"  {b.metric:<12} {b.location_value} {b.unit:<6} → "
+                         f"each published optimal window, and the change it would need:")
+            for c in claims:
+                # Only .correction is read: the journal claims state no absolute
+                # range, so _assess_band's status would be meaningless for them.
+                gap = _assess_band(b.metric, b.location_value, b.unit,
+                                   {"opt_min": c.opt_min, "opt_max": c.opt_max}).correction
+                change = "within optimal" if gap == 0 else (
+                    f"needs {'+' if gap > 0 else ''}{gap} {b.unit}")
+                band = f"{_num(c.opt_min)}–{_num(c.opt_max)} {b.unit}"
+                condition = f"at {c.condition}" if c.condition else "no condition stated"
+                lines.append(f"      {band:<9} → {change:<15} {c.source}  [{condition}]")
+            continue
         note = "within optimal" if b.status == "optimal" else (
             f"needs {'+' if b.correction > 0 else ''}{b.correction} {b.unit} to reach optimal")
         lines.append(f"  {b.metric:<12} {b.location_value} {b.unit:<6} → {b.status.upper():<11} ({note})")
     if not a.warmest_month_reaches_opt:
-        lines.append(f"  note: even the warmest month stays below the crop's optimal minimum.")
+        lines.append("  note: even the warmest month stays below FAO ECOCROP's optimal minimum.")
     lines.append("")
-    lines.append(f"Verdict: {a.verdict}")
+    lines.append(f"Verdict (on FAO ECOCROP's bands): {a.verdict}")
     lines.append("")
     lines.append(f"Data: NASA POWER (climate) · {crop['_source']['attribution']} (crop requirements).")
+    lines.append("Temperature claims:")
+    for c in claims:
+        lines.append(f"  · {cite(c)}")
     return "\n".join(lines)
 
 
