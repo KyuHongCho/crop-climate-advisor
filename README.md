@@ -27,7 +27,7 @@ tool — built as real, working code with transparently reported status.
 | ✅ | Suitability + chamber-correction reasoning (temperature, rainfall) | **working** |
 | ✅ | CLI + offline unit tests | **working** |
 | ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
-| ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — the CLI prints all three and derives from their intersection that no single window satisfies them all |
+| ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — the CLI prints all three and derives from their intersection that no single window satisfies them all; for the queried location it also reports where that location falls relative to each claim, flags it when the sources point in opposite directions there, and prints a conservative read that never calls a site optimal unless every source does |
 | ⏳ | Second crop (*Catharanthus roseus*, ECOCROP id 652) | planned |
 | ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | planned |
 | ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
@@ -73,6 +73,7 @@ Crop needs — rainfall (FAO ECOCROP id 1547): opt 1000–1600 mm/yr
   note: even the warmest month stays below FAO ECOCROP's optimal minimum.
 
 Verdict (on FAO ECOCROP's bands): Basil is marginal outdoors at London; a controlled-environment chamber would need to close the gaps below.
+Conservative read: 10.39 °C is below optimal.
 
 Data: NASA POWER (climate) · © FAO ECOCROP (crop requirements).
 Temperature claims:
@@ -119,7 +120,13 @@ conditioned on a stated daily light integral (DLI), while ECOCROP states none.
 condition, and, for the two it could not read directly, the open-access paper it *was* read through.
 The "no single window" sentence above is computed from the three bands rather than asserted
 (`crop_advisor/claims.py`); if the sources ever did overlap, the CLI would name the overlap instead.
-Nothing picks a winner.
+Nothing picks a winner. The CLI also reports, for the queried location, whether the sources point in
+*opposite* directions there — one calling the site too cold while another calls it too hot — which is a
+narrower question than whether they share a window at all, and can be false even where the answer to that
+one is no. Between 27 and 29 °C they do point in opposite directions: that is above ECOCROP's optimal
+maximum but below Walters & Currey's optimal minimum, so the CLI flags the disagreement and refuses to call
+the site optimal (the interval is derived from the published bands and pinned by
+`tests/test_divergence.py`).
 
 **What is still planned:** the eval harness itself — a scored, repeatable run that checks the system
 **notices and flags** this disagreement rather than silently picking one. A real, pre-identified

@@ -5,7 +5,7 @@ Example:
 """
 import argparse
 
-from .claims import cite, consensus, temperature_claims
+from .claims import cite, classify, conservative, consensus, divergence, temperature_claims
 from .climate import fetch_climate
 from .ecocrop import available_crops, load_crop
 from .suitability import Assessment, _assess_band, assess
@@ -17,16 +17,30 @@ def _num(value) -> str:
     return str(int(f)) if f.is_integer() else str(f)
 
 
-def _agreement(claims) -> str:
+def _agreement(claims, unit: str) -> str:
     """One clause describing whether the claims share any window at all.
 
     Derived from consensus(): if the sources ever did agree, this names the
-    window they agree on instead.
+    window they agree on instead, in the unit it is given.
     """
+    claims = tuple(claims)   # len() below, so any iterable must be materialised
     agreed = consensus(claims)
     if agreed is None:
         return f"no single window satisfies all {len(claims)} published sources"
-    return f"all {len(claims)} published sources are satisfied by {_num(agreed[0])}–{_num(agreed[1])} °C"
+    return f"all {len(claims)} published sources are satisfied by {_num(agreed[0])}–{_num(agreed[1])} {unit}"
+
+
+def _disagreement_line(value, unit, claims) -> str:
+    """Name the sources that put `value` on opposite sides of their optimal band.
+
+    Precondition: both directions are present (the caller checks divergence()).
+    A source that calls the site optimal is not a party to the disagreement, so
+    it is not named here; its own row is printed above.
+    """
+    above = ", ".join(c.source for c in claims if classify(value, c) == "above")
+    below = ", ".join(c.source for c in claims if classify(value, c) == "below")
+    return (f"Sources disagree: {value} {unit} is above optimal for {above}; "
+            f"below optimal for {below}.")
 
 
 def _format(a: Assessment, crop: dict, climate) -> str:
@@ -37,7 +51,8 @@ def _format(a: Assessment, crop: dict, climate) -> str:
     lines.append(f"Location climate (NASA POWER): annual mean {climate.annual_mean_temp_c} °C, "
                  f"warmest month {climate.warmest_month_temp_c} °C, "
                  f"annual precip {climate.annual_precip_mm} mm")
-    lines.append(f"Crop needs — temperature: {_agreement(claims)}; every claim is listed below.")
+    lines.append(f"Crop needs — temperature: {_agreement(claims, a.temperature.unit)}; "
+                 f"every claim is listed below.")
     lines.append(f"Crop needs — rainfall (FAO ECOCROP id {crop.get('ecocrop_id')}): "
                  f"opt {crop['rainfall_mm_yr']['opt_min']}–{crop['rainfall_mm_yr']['opt_max']} mm/yr")
     lines.append("")
@@ -63,6 +78,11 @@ def _format(a: Assessment, crop: dict, climate) -> str:
         lines.append("  note: even the warmest month stays below FAO ECOCROP's optimal minimum.")
     lines.append("")
     lines.append(f"Verdict (on FAO ECOCROP's bands): {a.verdict}")
+    value, unit = a.temperature.location_value, a.temperature.unit
+    directions = divergence(value, claims)
+    if {"below", "above"} <= directions:
+        lines.append(_disagreement_line(value, unit, claims))
+    lines.append(f"Conservative read: {value} {unit} is {conservative(directions)}.")
     lines.append("")
     lines.append(f"Data: NASA POWER (climate) · {crop['_source']['attribution']} (crop requirements).")
     lines.append("Temperature claims:")

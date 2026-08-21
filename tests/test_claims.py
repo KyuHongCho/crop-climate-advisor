@@ -122,5 +122,47 @@ class TestNoUnattributedConstants(unittest.TestCase):
                 self.assertTrue(claim.url.startswith("https://"))
 
 
+class TestJournalClaimsAreBoundToTheCropTheyStudy(unittest.TestCase):
+    """The two journal claims are studies of basil; they must not travel."""
+
+    def test_a_different_crop_gets_only_its_own_ecocrop_claim(self):
+        fake = {"ecocrop_id": 99, "temperature_c": {"opt_min": 1, "opt_max": 2},
+                "_source": {"url": "https://example.invalid/99"}}
+        got = temperature_claims(fake)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0].source, "FAO ECOCROP (id 99)")
+        sources = [c.source for c in got]
+        for journal in JOURNAL_TEMPERATURE_CLAIMS:
+            self.assertNotIn(journal.source, sources)
+
+    def test_basil_still_gets_all_three(self):
+        self.assertEqual(
+            [c.source for c in temperature_claims(BASIL)],
+            ["FAO ECOCROP (id 1547)",
+             "Chang, Alderson & Wright (2005)",
+             "Walters & Currey (2019)"],
+        )
+
+    def test_a_crop_always_gets_at_least_the_ecocrop_claim(self):
+        # Nothing downstream ever sees an empty claim set, whatever the crop.
+        fake = {"ecocrop_id": 99, "temperature_c": {"opt_min": 1, "opt_max": 2},
+                "_source": {"url": "https://example.invalid/99"}}
+        for crop, label in ((BASIL, "basil"), (fake, "a crop with no journal claims")):
+            with self.subTest(crop=label):
+                got = temperature_claims(crop)
+                self.assertGreaterEqual(len(got), 1)
+                self.assertTrue(got[0].source.startswith("FAO ECOCROP"))
+
+
+class TestClaimRejectsFalseProvenance(unittest.TestCase):
+    def test_a_direct_claim_that_also_names_a_via_cannot_be_constructed(self):
+        # cite() renders a read_directly claim as first-hand and never reads
+        # `via`, so this state would credit the wrong URL and drop the chain.
+        direct = temperature_claims(BASIL)[0]
+        self.assertTrue(direct.read_directly)
+        with self.assertRaises(ValueError):
+            dataclasses.replace(direct, via="Some paper")
+
+
 if __name__ == "__main__":
     unittest.main()
