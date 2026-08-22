@@ -17,6 +17,20 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
+
+#: Where a location sits relative to one claim's optimal band. "below" and
+#: "above" describe the *location*, not the band.
+Direction = Literal["below", "optimal", "above"]
+
+#: Every reading conservative() can return. get_args() on this gives callers
+#: (and tests) an authoritative allowed-set that cannot drift from the code.
+ConservativeRead = Literal[
+    "optimal",
+    "below optimal",
+    "above optimal",
+    "not optimal (sources disagree in direction)",
+]
 
 
 @dataclass(frozen=True)
@@ -35,6 +49,17 @@ class Claim:
     @property
     def band(self) -> tuple[float, float]:
         return (self.opt_min, self.opt_max)
+
+    def __post_init__(self) -> None:
+        # cite() renders a read_directly claim as first-hand and never looks at
+        # `via`, so this combination would credit the wrong URL and drop the
+        # citation chain in silence. Make the state unrepresentable instead.
+        if self.read_directly and (self.via or "").strip():
+            raise ValueError(
+                f"{self.source!r} is marked read_directly=True but also names a 'via' "
+                f"source; rendering it would credit the via paper's URL as read directly "
+                f"and silently drop the chain"
+            )
 
 
 def cite(claim: Claim) -> str:
@@ -85,13 +110,18 @@ WALTERS_CURREY_2019 = Claim(
 #: dataclasses: nothing downstream can quietly edit a published figure.
 JOURNAL_TEMPERATURE_CLAIMS: tuple[Claim, ...] = (CHANG_2005, WALTERS_CURREY_2019)
 
+#: The two journal claims are studies of *Ocimum basilicum*; nothing in them
+#: applies to another species. This is the crop they are about.
+JOURNAL_CLAIMS_ECOCROP_ID = 1547
+
 
 def temperature_claims(crop: dict) -> tuple[Claim, ...]:
-    """Every published optimal-temperature claim for `crop`.
+    """The published optimal-temperature claims that apply to `crop`.
 
-    The FAO ECOCROP claim is built from the crop dict actually in hand (so it
-    tracks the bundled data file); the journal claims are the frozen constants
-    above.
+    The FAO ECOCROP claim is built from the crop dict actually in hand, so it
+    tracks the bundled data file. The two journal claims are studies of one
+    species and are attached only to that species (see
+    JOURNAL_CLAIMS_ECOCROP_ID); any other crop gets its ECOCROP claim alone.
     """
     band = crop["temperature_c"]
     ecocrop_id = crop.get("ecocrop_id")
@@ -106,7 +136,10 @@ def temperature_claims(crop: dict) -> tuple[Claim, ...]:
         via=None,
         url=source.get("url", ""),
     )
-    return (ecocrop,) + JOURNAL_TEMPERATURE_CLAIMS
+    # Read through the module-level name at call time, so the journal claims
+    # stay substitutable, and gate on the crop they are actually about.
+    journal = JOURNAL_TEMPERATURE_CLAIMS if ecocrop_id == JOURNAL_CLAIMS_ECOCROP_ID else ()
+    return (ecocrop,) + journal
 
 
 def consensus(claims: Iterable[Claim]) -> tuple[float, float] | None:
@@ -123,3 +156,46 @@ def consensus(claims: Iterable[Claim]) -> tuple[float, float] | None:
     if low > high:
         return None
     return (low, high)
+
+
+def classify(value: float, claim: Claim) -> Direction:
+    """Where `value` sits relative to one claim's optimal band.
+
+    "below"/"above" describe the *location*, not the band: 10.39 °C is below
+    ECOCROP's 18–27, 28.0 °C is above it. Band edges are inclusive, matching
+    _assess_band's optimal test.
+    """
+    if value < claim.opt_min:
+        return "below"
+    if value > claim.opt_max:
+        return "above"
+    return "optimal"
+
+
+def divergence(value: float, claims: Iterable[Claim]) -> frozenset[Direction]:
+    """The distinct directions the claims put `value` in.
+
+    Feeds conservative() directly. Sources disagree *in direction* at `value`
+    exactly when this contains both "below" and "above" — one source says the
+    site is too cold while another says it is too hot.
+    """
+    return frozenset(classify(value, c) for c in claims)
+
+
+def conservative(verdicts: Iterable[Direction]) -> ConservativeRead:
+    """The reading that never calls a site optimal unless every claim does.
+
+    Total: every input has a defined result, including the empty one, which
+    falls through to the disagreement string — a default that errs away from
+    "optimal" rather than raising. The CLI cannot reach that case, because
+    temperature_claims() always returns at least the ECOCROP claim.
+    """
+    s = set(verdicts)
+    if s == {"optimal"}:
+        return "optimal"
+    non_opt = s - {"optimal"}
+    if non_opt == {"below"}:
+        return "below optimal"
+    if non_opt == {"above"}:
+        return "above optimal"
+    return "not optimal (sources disagree in direction)"
