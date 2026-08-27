@@ -1,0 +1,241 @@
+name: Agentic Review
+
+# Runs the agentic-workflow `review` -> `review-audit` loop against a pull request.
+# Ported from KyuHongCho/agentic-workflow. Two things differ from the original:
+#
+#   1. The portable instruction files (`core/`) do not live in this repo. They are
+#      checked out from the agentic-workflow repository at run time, so there is one
+#      source of truth and no vendored copy to drift. A symlink cannot do this: git
+#      stores a symlink as its target path, so a clone on a runner gets a dangling
+#      link and zero files.
+#   2. This project has a real test suite, and `verify.md` requires a reviewer to RUN
+#      the existing tests rather than reason about them. Python and the dependencies
+#      are therefore installed before the agent starts.
+#
+#   * pull_request  — a review when a PR is opened, reopened or marked ready.
+#     `synchronize` (every push) IS listed, but only so a run exists to CLEAR the labels;
+#     it never starts a review, or an active PR would re-run the whole loop per commit.
+#     Re-review on demand with `/agentic-review`.
+#   * issue_comment — a human types `/agentic-review` in the PR's Conversation tab.
+#     NOTE: issue_comment only fires from the workflow file on the DEFAULT branch, and its
+#     GITHUB_SHA is the default branch's last commit — NOT the PR. Every job therefore
+#     checks out `refs/pull/<n>/merge` explicitly, or it would review main instead of the PR.
+#
+# Ordering is by `needs:`, not by waiting on a label event. Labels are display only —
+# Review ongoing -> Audit ongoing -> Review finished.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  # A new push supersedes an in-flight review, cancelling it. The same push then runs the
+  # gate's `synchronize` branch, which clears every label — so a cancelled run cannot leave
+  # a label claiming a review that no longer exists.
+  group: agentic-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write          # PR conversation comments are issue comments (labels + reactions)
+  id-token: write
+
+env:
+  # `gate` and `finalize` run without a checkout, so `gh` has no git remote to infer the
+  # repo from and dies with "not a git repository" — which `|| true` then swallows, leaving
+  # a green job that silently did nothing. Set it for every job.
+  GH_REPO: ${{ github.repository }}
+  # Where the portable core is checked out, and which Python the reviewer runs tests on
+  # (3.14 is the upper end of the CI matrix in ci.yml).
+  CORE_DIR: .agentic-workflow
+  PY_VERSION: "3.14"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      pr: ${{ steps.decide.outputs.pr }}
+    steps:
+      - id: decide
+        # Every piece of event data arrives as an env var, never interpolated into the script.
+        # A comment body is attacker-controlled text; `${{ }}` would splice it into the shell.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.comment.body }}
+          IS_PR: ${{ github.event.issue.pull_request.url }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          CID: ${{ github.event.comment.id }}
+          PR_EVT: ${{ github.event.pull_request.number }}
+          ISSUE_NO: ${{ github.event.issue.number }}
+          ASSOC: ${{ github.event.comment.author_association }}
+          HAVE_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # A push invalidates a completed review. Clear the labels so they cannot claim a
+          # review that no longer matches the code — but do NOT re-run the agents; that is
+          # what `/agentic-review` is for. Placed before the key check because label hygiene
+          # does not depend on the token.
+          if [ "$EVENT" = "pull_request" ] && [ "$ACTION" = "synchronize" ]; then
+            gh pr edit "$PR_EVT" --remove-label "Review ongoing" \
+              --remove-label "Audit ongoing" --remove-label "Review finished" || true
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Without the key the action cannot run. Stand down quietly rather than fail red.
+          if [ "$HAVE_KEY" != "true" ]; then
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN is not set — agentic review skipped."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "pr=$PR_EVT" >> "$GITHUB_OUTPUT"
+          # `issue.pull_request` is present only when the comment is on a PR. The trailing
+          # class mirrors claude-code-action's own trigger regex so `/agentic-review, please`
+          # still fires. Only a write-level author may trigger: the action rejects non-write
+          # actors itself, but only AFTER this job has already reacted and labelled.
+          elif [ -n "$IS_PR" ] \
+               && printf '%s' "$ASSOC" | grep -qxE 'OWNER|MEMBER|COLLABORATOR' \
+               && printf '%s' "$BODY" \
+               | grep -qiE '(^|[[:space:]])/agentic-review([[:space:].,!?;:]|$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "pr=$ISSUE_NO" >> "$GITHUB_OUTPUT"
+            gh api -X POST "repos/$REPO/issues/comments/$CID/reactions" -f content=eyes \
+              || echo "::warning::could not add the eye reaction (non-fatal)"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  review:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ needs.gate.outputs.pr }}/merge
+          fetch-depth: 0
+      - name: Fetch the portable core
+        uses: actions/checkout@v7
+        with:
+          repository: KyuHongCho/agentic-workflow
+          path: ${{ env.CORE_DIR }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Install dependencies so the reviewer can actually run the tests
+        run: pip install -r requirements.txt
+      - name: Label — review starting
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit "${{ needs.gate.outputs.pr }}" \
+            --add-label "Review ongoing" --remove-label "Review finished" || true
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: --max-turns 40
+          prompt: |
+            You are the `review` role. Follow, from this checkout:
+              ${{ env.CORE_DIR }}/core/roles/review.md    — what to produce
+              ${{ env.CORE_DIR }}/core/shared/verify.md   — how to ground each finding,
+                                                            and revert every throwaway
+            REPO: ${{ github.repository }}   PR: ${{ needs.gate.outputs.pr }}
+
+            The offline test suite is `python -m unittest discover -s tests` and it is
+            already installed. `verify.md` requires you to RUN it rather than reason about
+            it, and to create a throwaway test where nothing covers a claim — then delete
+            it. Do not run the live NASA POWER test; it is opt-in via
+            CROP_ADVISOR_LIVE_TESTS and a third-party outage must not affect this review.
+
+            Post exactly ONE pull request comment. For every finding give:
+              * the file path and line number
+              * before/after code
+              * why it matters
+            End with a "Verification process" section stating which tests you ran, any
+            throwaway test or temporary amendment you made and removed, and the final
+            `git status --porcelain`. Mark any finding you could not ground as unverified.
+
+  review-audit:
+    needs: [gate, review]
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ needs.gate.outputs.pr }}/merge
+          fetch-depth: 0
+      - name: Fetch the portable core
+        uses: actions/checkout@v7
+        with:
+          repository: KyuHongCho/agentic-workflow
+          path: ${{ env.CORE_DIR }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Install dependencies so the auditor can reproduce the findings
+        run: pip install -r requirements.txt
+      - name: Label — audit starting
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit "${{ needs.gate.outputs.pr }}" \
+            --add-label "Audit ongoing" --remove-label "Review ongoing" || true
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: --max-turns 40
+          prompt: |
+            You are the `review-audit` auditor. Follow, from this checkout:
+              ${{ env.CORE_DIR }}/core/auditors/review-audit.md — the criteria, both passes
+              ${{ env.CORE_DIR }}/core/shared/verify.md         — how to ground each objection
+            REPO: ${{ github.repository }}   PR: ${{ needs.gate.outputs.pr }}
+
+            Pass 1 is BLIND. Form your own findings from the diff BEFORE you read the
+            reviewer's comment; reading it first anchors you, and blind spots are what this
+            pass exists to catch. Only then open the review and compare.
+
+            Reproduce findings yourself with `python -m unittest discover -s tests`. Do not
+            take the reviewer's word that a defect is real, nor that the rest is sound.
+
+            Then EDIT the reviewer's existing comment in place (do not post a second one):
+              * if something is wrong, correct it and say what was wrong
+              * if nothing is wrong, say so and explain why each finding holds
+            Append a "Re-verification process" section: what you re-ran, what you amended
+            and reverted, and the final `git status --porcelain`.
+
+  # A label must never outlive the run that set it. A failed `review` skips `review-audit`,
+  # and a skipped job runs ZERO steps — so a cleanup living inside it would never run. This
+  # job depends on all three, runs whatever happened, and solely owns the terminal label.
+  finalize:
+    needs: [gate, review, review-audit]
+    if: always() && needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ needs.gate.outputs.pr }}
+          REVIEW: ${{ needs.review.result }}
+          AUDIT: ${{ needs.review-audit.result }}
+        run: |
+          set -euo pipefail
+          if [ "$REVIEW" = "success" ] && [ "$AUDIT" = "success" ]; then
+            gh pr edit "$PR" --add-label "Review finished" \
+              --remove-label "Review ongoing" --remove-label "Audit ongoing" || true
+          else
+            echo "::warning::review=$REVIEW audit=$AUDIT — clearing labels, no review claimed."
+            gh pr edit "$PR" --remove-label "Review ongoing" \
+              --remove-label "Audit ongoing" --remove-label "Review finished" || true
+          fi

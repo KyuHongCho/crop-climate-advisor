@@ -145,6 +145,15 @@ scored on handling them.
   the 29–35 °C figure with Walters & Currey (2019), *HortScience* 54(11):1915. Both are cited here
   **via** the open-access papers linked above, which is how they were verified.
 
+## Licence
+
+The **source code** in this repository is MIT licensed — see [LICENSE](LICENSE).
+
+That grant does **not** extend to the bundled data. `data/ecocrop/` is © FAO ECOCROP and remains
+subject to the [FAO Terms and Conditions](https://www.fao.org/contact-us/terms/en/) quoted above
+(non-commercial research, with attribution). Climate figures are retrieved live from NASA POWER and
+are not redistributed here.
+
 ## Project layout
 
 ```
