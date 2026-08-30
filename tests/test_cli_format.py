@@ -347,5 +347,36 @@ class TestTheFlagFiresOnlyWhenTheSourcesAreOpposed(unittest.TestCase):
                         self.assertFalse(line.endswith("for ."))
 
 
+class TestCliArgumentWiring(unittest.TestCase):
+    """run_cli() checks the climate stub was called, but never with what."""
+
+    def test_lat_and_lon_are_passed_through_in_that_order(self):
+        buf = io.StringIO()
+        with mock.patch.object(cli, "fetch_climate", return_value=LONDON) as stub:
+            with redirect_stdout(buf):
+                cli.main(["--crop", "basil", "--lat", "51.5", "--lon", "-0.13"])
+        self.assertEqual(stub.call_args.args, (51.5, -0.13))
+
+    def test_required_arguments_are_enforced(self):
+        # Omit exactly ONE required flag per case. Omitting several at once would
+        # still exit even if one of them were made optional, hiding the defect.
+        complete = {"--crop": "basil", "--lat": "51.5", "--lon": "-0.13"}
+        for omitted in complete:
+            with self.subTest(omitted=omitted):
+                argv = [tok for k, v in complete.items() if k != omitted for tok in (k, v)]
+                buf = io.StringIO()
+                with mock.patch.object(cli, "fetch_climate", return_value=LONDON):
+                    with redirect_stdout(buf), self.assertRaises(SystemExit):
+                        cli.main(argv)
+
+    def test_lat_and_lon_are_parsed_as_floats(self):
+        buf = io.StringIO()
+        with mock.patch.object(cli, "fetch_climate", return_value=LONDON) as stub:
+            with redirect_stdout(buf):
+                cli.main(["--crop", "basil", "--lat", "51.5", "--lon", "-0.13"])
+        self.assertIsInstance(stub.call_args.args[0], float)
+        self.assertIsInstance(stub.call_args.args[1], float)
+
+
 if __name__ == "__main__":
     unittest.main()
