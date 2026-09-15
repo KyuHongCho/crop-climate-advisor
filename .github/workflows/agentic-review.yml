@@ -144,7 +144,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: --max-turns 40
+          claude_args: --max-turns 40 --permission-mode bypassPermissions
           prompt: |
             You are the `review` role. Follow, from this checkout:
               ${{ env.CORE_DIR }}/core/roles/review.md    — what to produce
@@ -201,7 +201,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: --max-turns 40
+          claude_args: --max-turns 40 --permission-mode bypassPermissions
           prompt: |
             You are the `review-audit` auditor. Follow, from this checkout:
               ${{ env.CORE_DIR }}/core/auditors/review-audit.md — the criteria, both passes
