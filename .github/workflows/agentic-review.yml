@@ -34,7 +34,14 @@ concurrency:
   # A new push supersedes an in-flight review, cancelling it. The same push then runs the
   # gate's `synchronize` branch, which clears every label — so a cancelled run cannot leave
   # a label claiming a review that no longer exists.
-  group: agentic-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  #
+  # `review` posting its own PR comment is itself an `issue_comment: created` event, which
+  # re-enters this same trigger. Without the check below, that self-triggered run would join
+  # this group and cancel the still-running `review-audit` that follows it. Only a genuine
+  # `/agentic-review` trigger (or any `pull_request` event) shares the real group; any other
+  # `issue_comment` — including the bot's own comment — is routed into a unique, per-comment
+  # group instead, so it can never cancel an in-flight run.
+  group: agentic-review-${{ github.event.pull_request.number || github.event.issue.number }}${{ (github.event_name == 'issue_comment' && !(contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '/agentic-review'))) && format('-noop-{0}', github.event.comment.id) || '' }}
   cancel-in-progress: true
 
 permissions:
