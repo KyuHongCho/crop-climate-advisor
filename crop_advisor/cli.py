@@ -1,4 +1,4 @@
-"""Command-line entry point for the Stage-0 slice.
+"""Command-line entry point for crop-climate-advisor.
 
 Example:
     python3 -m crop_advisor.cli --crop basil --lat 51.5 --lon -0.13 --place London

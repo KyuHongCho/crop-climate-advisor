@@ -52,6 +52,14 @@ python3 -m unittest discover -s tests
 # Also run the live NASA POWER test (opt-in; makes a real API call):
 CROP_ADVISOR_LIVE_TESTS=1 python3 -m unittest discover -s tests
 
+# Optional dev tooling (pytest, mutmut) — not needed to run the advisor, and
+# not used by CI, which installs requirements.txt and runs stdlib unittest:
+pip install -r requirements-dev.txt
+
+# Mutation testing: does the suite actually fail when the code is broken?
+# Takes a few seconds and writes a mutants/ working copy (gitignored).
+mutmut run
+
 # Regenerate the bundled ECOCROP data (one-time scrape):
 python3 scripts/scrape_ecocrop.py --id 1547 --slug basil --common-name basil
 ```
