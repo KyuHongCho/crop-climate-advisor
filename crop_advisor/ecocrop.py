@@ -1,4 +1,5 @@
-"""Load bundled FAO ECOCROP crop requirements (scraped once; see decision 05).
+"""Load bundled FAO ECOCROP crop requirements (scraped once — see "Architecture
+& design decisions" in README.md).
 
 The numeric fields are a one-time scrape into JSON under data/ecocrop/, not a
 live per-request call. Regenerate with scripts/scrape_ecocrop.py.

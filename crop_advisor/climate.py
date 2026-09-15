@@ -1,7 +1,7 @@
 """Location climate via the NASA POWER climatology API (free, public, no auth).
 
-This is the live data source that the MCP tool will wrap in a later stage; for
-now it's a plain client function the standalone app calls.
+This is the live data source: `mcp_server.py` already wraps it as an MCP tool,
+and the standalone CLI also calls this client function directly.
 """
 from dataclasses import dataclass
 

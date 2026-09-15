@@ -1,0 +1,22 @@
+# Development dependencies — NOT needed to run the advisor, and NOT used by CI:
+# .github/workflows/ci.yml installs requirements.txt and runs stdlib unittest,
+# and the whole suite passes on runtime deps alone.
+#
+# These were previously installed ad hoc and existed only inside .venv, so
+# rebuilding the environment silently dropped them. Declared here so a fresh
+# clone (or a Python upgrade) restores the toolchain in one command.
+#
+# Install with:  pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# Test runner. The canonical suite is stdlib unittest (see README Quickstart and
+# .github/workflows/ci.yml); pytest is used locally for its nicer output and
+# runs the same unittest cases unchanged. Declared explicitly rather than left
+# to mutmut's dependency tree, so removing mutmut does not silently remove it.
+pytest>=9
+
+# Mutation testing — checks whether the tests actually fail when the code is
+# broken, rather than merely executing it. Pulls in coverage, libcst, textual,
+# setproctitle and toml, so none of those need declaring separately.
+mutmut>=3
