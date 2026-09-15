@@ -158,7 +158,13 @@ jobs:
             it. Do not run the live NASA POWER test; it is opt-in via
             CROP_ADVISOR_LIVE_TESTS and a third-party outage must not affect this review.
 
-            Post exactly ONE pull request comment. For every finding give:
+            Write the comment body to a scratch file outside the checked-out repo (e.g.
+            `cat > /tmp/review-comment.md <<'EOF' ... EOF`), then post it with exactly ONE
+            `gh pr comment ${{ needs.gate.outputs.pr }} --body-file /tmp/review-comment.md` call.
+            Never use `gh api` to post it — this repo's own CI guardrails treat a `gh api` write
+            as a shipping action that needs human approval, which this headless run cannot obtain,
+            and the attempt will burn your turn budget on denied retries instead of succeeding.
+            For every finding give:
               * the file path and line number
               * before/after code
               * why it matters
@@ -209,7 +215,12 @@ jobs:
             Reproduce findings yourself with `python -m unittest discover -s tests`. Do not
             take the reviewer's word that a defect is real, nor that the rest is sound.
 
-            Then EDIT the reviewer's existing comment in place (do not post a second one):
+            Write the updated body to a scratch file outside the checked-out repo (e.g.
+            `cat > /tmp/audit-comment.md <<'EOF' ... EOF`), then EDIT the reviewer's existing
+            comment in place with exactly ONE
+            `gh pr comment ${{ needs.gate.outputs.pr }} --edit-last --body-file /tmp/audit-comment.md`
+            call — do not post a second comment, and never use `gh api` for this (same guardrail
+            as the `review` job above):
               * if something is wrong, correct it and say what was wrong
               * if nothing is wrong, say so and explain why each finding holds
             Append a "Re-verification process" section: what you re-ran, what you amended
