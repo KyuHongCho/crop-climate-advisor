@@ -35,7 +35,12 @@ ConservativeRead = Literal[
 
 @dataclass(frozen=True)
 class Claim:
-    """One source's claimed optimal band for one metric, with its provenance."""
+    """One source's claimed optimal band for one metric, with its provenance.
+
+    `licence_note` is optional: when the figure was read through a Creative
+    Commons article, it carries the credit, licence link and change notice that
+    licence asks for. It is shown by the CLI, never folded into `cite()`.
+    """
 
     source: str            # short label for inline use, e.g. "Walters & Currey (2019)"
     reference: str         # full bibliographic reference, for the citation footer
@@ -45,6 +50,7 @@ class Claim:
     read_directly: bool    # False when we read the figure in a *different* paper
     via: str | None        # the open-access paper it was read through, when not direct
     url: str               # where the figure can actually be checked
+    licence_note: str | None = None  # CC credit / licence link / change notice, if any
 
     @property
     def band(self) -> tuple[float, float]:
@@ -84,6 +90,13 @@ def cite(claim: Claim) -> str:
 # --- the two journal claims, frozen ------------------------------------------
 # Both were read via an open-access paper, not from the (paywalled) original.
 
+#: CC BY 4.0 attribution for the one article both journal figures were read in.
+JOURNAL_LICENCE_NOTE = (
+    "Read through Walters, Tarr & Lopez (2023), CC BY 4.0 "
+    "(https://creativecommons.org/licenses/by/4.0/). Figure summarised from that "
+    "article; changes were made. Not endorsed by the authors."
+)
+
 CHANG_2005 = Claim(
     source="Chang, Alderson & Wright (2005)",
     reference="Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598",
@@ -91,8 +104,9 @@ CHANG_2005 = Claim(
     opt_max=30,
     condition="DLI 20–22 mol·m⁻²·d⁻¹",
     read_directly=False,
-    via="Barickman et al. (2021), Plants 10(6):1072",
-    url="https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/",
+    via="Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905",
+    url="https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/",
+    licence_note=JOURNAL_LICENCE_NOTE,
 )
 
 WALTERS_CURREY_2019 = Claim(
@@ -104,6 +118,7 @@ WALTERS_CURREY_2019 = Claim(
     read_directly=False,
     via="Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905",
     url="https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/",
+    licence_note=JOURNAL_LICENCE_NOTE,
 )
 
 #: The journal claims, in ascending order of optimal band. A tuple, of frozen
