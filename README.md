@@ -11,10 +11,11 @@ A small project exploring how to combine **retrieval over structured agronomic d
 tool — built as real, working code with transparently reported status.
 
 > **Status: early. Building in progress — not finished.**
-> A working end-to-end slice runs today for **basil** — including its optimal temperature reported
-> as three attributed, disagreeing published claims rather than one — and the NASA POWER climate
-> lookup is exposed as an **MCP server**. The second crop, the eval harness that would *score* how
-> that disagreement is handled, the RAG layer, and the Agent Skill are **not built**.
+> A working end-to-end slice runs today for seven crops (basil, lettuce, strawberry, tomato, cucumber,
+> sweet-pepper, kale) — and for **basil** its optimal temperature is reported as three attributed,
+> disagreeing published claims rather than one (the other six show their FAO ECOCROP claim only) —
+> and the NASA POWER climate lookup is exposed as an **MCP server**. The eval harness that would
+> *score* how that disagreement is handled, the RAG layer, and the Agent Skill are **not built**.
 > See [What works / What's planned](#what-works--whats-planned).
 > This README describes only what actually runs; planned work is labelled as such.
 
@@ -23,12 +24,11 @@ tool — built as real, working code with transparently reported status.
 | | Component | Status |
 |---|-----------|--------|
 | ✅ | Live climate lookup — NASA POWER climatology API (free, no auth) | **working** |
-| ✅ | Structured crop-requirements lookup — FAO ECOCROP, scraped once → bundled JSON | **working** (basil) |
+| ✅ | Structured crop-requirements lookup — FAO ECOCROP, scraped once → bundled JSON | **working** (7 crops: basil, lettuce, strawberry, tomato, cucumber, sweet-pepper, kale) |
 | ✅ | Suitability + chamber-correction reasoning (temperature, rainfall) | **working** |
 | ✅ | CLI + offline unit tests | **working** |
 | ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
-| ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — the CLI prints all three and derives from their intersection that no single window satisfies them all; for the queried location it also reports where that location falls relative to each claim, flags it when the sources point in opposite directions there, and prints a conservative read that never calls a site optimal unless every source does |
-| ⏳ | Second crop (*Catharanthus roseus*, ECOCROP id 652) | planned |
+| ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — for basil only (journal claims are attached to ECOCROP id 1547; the other crops show the ECOCROP claim alone) the CLI prints all three and derives from their intersection that no single window satisfies them all; for the queried location it also reports where that location falls relative to each claim, flags it when the sources point in opposite directions there, and prints a conservative read that never calls a site optimal unless every source does |
 | ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | planned |
 | ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
 | ⏳ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | planned |

@@ -1,0 +1,46 @@
+{
+  "name": "Cucumis sativus",
+  "ecocrop_id": 817,
+  "temperature_c": {
+    "opt_min": 18,
+    "opt_max": 32,
+    "abs_min": 6,
+    "abs_max": 38
+  },
+  "rainfall_mm_yr": {
+    "opt_min": 1000,
+    "opt_max": 1200,
+    "abs_min": 400,
+    "abs_max": 4300
+  },
+  "soil_ph": {
+    "opt_min": 6,
+    "opt_max": 7.5,
+    "abs_min": 4.5,
+    "abs_max": 8.7
+  },
+  "crop_cycle_days": {
+    "min": 40,
+    "max": 180
+  },
+  "climate_zones": [
+    "tropical wet & dry (Aw)",
+    "tropical wet (Ar)",
+    "steppe or semiarid (Bs)",
+    "subtropical humid (Cf)",
+    "subtropical dry summer (Cs)",
+    "subtropical dry winter (Cw)",
+    "temperate oceanic (Do)",
+    "temperate continental (Dc)",
+    "temperate with humid winters (Df)",
+    "temperate with dry winters (Dw)"
+  ],
+  "_source": {
+    "provider": "FAO ECOCROP",
+    "url": "https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=817",
+    "accessed": "2026-10-03",
+    "attribution": "© FAO ECOCROP",
+    "license_note": "Non-commercial research use with attribution per FAO Terms and Conditions (https://www.fao.org/contact-us/terms/en/)."
+  },
+  "common_name": "cucumber"
+}

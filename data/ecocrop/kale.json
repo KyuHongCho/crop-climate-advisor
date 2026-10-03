@@ -1,0 +1,47 @@
+{
+  "name": "Brassica oleracea var. acephala",
+  "ecocrop_id": 3867,
+  "temperature_c": {
+    "opt_min": 15,
+    "opt_max": 22,
+    "abs_min": 7,
+    "abs_max": 30
+  },
+  "rainfall_mm_yr": {
+    "opt_min": 450,
+    "opt_max": 1000,
+    "abs_min": 300,
+    "abs_max": 2800
+  },
+  "soil_ph": {
+    "opt_min": 5.4,
+    "opt_max": 6,
+    "abs_min": 4.5,
+    "abs_max": 8.3
+  },
+  "crop_cycle_days": {
+    "min": 60,
+    "max": 85
+  },
+  "climate_zones": [
+    "tropical wet & dry (Aw)",
+    "tropical wet (Ar)",
+    "steppe or semiarid (Bs)",
+    "subtropical humid (Cf)",
+    "subtropical dry summer (Cs)",
+    "subtropical dry winter (Cw)",
+    "temperate oceanic (Do)",
+    "temperate continental (Dc)",
+    "temperate with humid winters (Df)",
+    "temperate with dry winters (Dw)",
+    "boreal (E)"
+  ],
+  "_source": {
+    "provider": "FAO ECOCROP",
+    "url": "https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=3867",
+    "accessed": "2026-10-03",
+    "attribution": "© FAO ECOCROP",
+    "license_note": "Non-commercial research use with attribution per FAO Terms and Conditions (https://www.fao.org/contact-us/terms/en/)."
+  },
+  "common_name": "kale"
+}
