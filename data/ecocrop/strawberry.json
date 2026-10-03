@@ -1,0 +1,45 @@
+{
+  "name": "Fragaria x ananassa",
+  "ecocrop_id": 1112,
+  "temperature_c": {
+    "opt_min": 11,
+    "opt_max": 24,
+    "abs_min": 6,
+    "abs_max": 28
+  },
+  "rainfall_mm_yr": {
+    "opt_min": 600,
+    "opt_max": 900,
+    "abs_min": 300,
+    "abs_max": 1700
+  },
+  "soil_ph": {
+    "opt_min": 6,
+    "opt_max": 6.8,
+    "abs_min": 4.5,
+    "abs_max": 8.2
+  },
+  "crop_cycle_days": {
+    "min": 180,
+    "max": 270
+  },
+  "climate_zones": [
+    "tropical wet & dry (Aw)",
+    "steppe or semiarid (Bs)",
+    "subtropical humid (Cf)",
+    "subtropical dry summer (Cs)",
+    "subtropical dry winter (Cw)",
+    "temperate oceanic (Do)",
+    "temperate continental (Dc)",
+    "temperate with humid winters (Df)",
+    "temperate with dry winters (Dw)"
+  ],
+  "_source": {
+    "provider": "FAO ECOCROP",
+    "url": "https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1112",
+    "accessed": "2026-10-02",
+    "attribution": "© FAO ECOCROP",
+    "license_note": "Non-commercial research use with attribution per FAO Terms and Conditions (https://www.fao.org/contact-us/terms/en/)."
+  },
+  "common_name": "strawberry"
+}

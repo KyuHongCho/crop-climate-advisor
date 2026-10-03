@@ -1,0 +1,41 @@
+{
+  "name": "Capsicum annuum",
+  "ecocrop_id": 618,
+  "temperature_c": {
+    "opt_min": 17,
+    "opt_max": 30,
+    "abs_min": 8,
+    "abs_max": 35
+  },
+  "rainfall_mm_yr": {
+    "opt_min": 600,
+    "opt_max": 1250,
+    "abs_min": 500,
+    "abs_max": 1700
+  },
+  "soil_ph": {
+    "opt_min": 5.5,
+    "opt_max": 6.8,
+    "abs_min": 4.5,
+    "abs_max": 7
+  },
+  "crop_cycle_days": {
+    "min": 60,
+    "max": 180
+  },
+  "climate_zones": [
+    "tropical wet & dry (Aw)",
+    "tropical wet (Ar)",
+    "subtropical humid (Cf)",
+    "subtropical dry summer (Cs)",
+    "subtropical dry winter (Cw)"
+  ],
+  "_source": {
+    "provider": "FAO ECOCROP",
+    "url": "https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=618",
+    "accessed": "2026-10-03",
+    "attribution": "© FAO ECOCROP",
+    "license_note": "Non-commercial research use with attribution per FAO Terms and Conditions (https://www.fao.org/contact-us/terms/en/)."
+  },
+  "common_name": "sweet pepper"
+}

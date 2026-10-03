@@ -1,0 +1,46 @@
+{
+  "name": "Lycopersicon esculentum",
+  "ecocrop_id": 1379,
+  "temperature_c": {
+    "opt_min": 20,
+    "opt_max": 27,
+    "abs_min": 7,
+    "abs_max": 35
+  },
+  "rainfall_mm_yr": {
+    "opt_min": 600,
+    "opt_max": 1300,
+    "abs_min": 400,
+    "abs_max": 1800
+  },
+  "soil_ph": {
+    "opt_min": 5.5,
+    "opt_max": 6.8,
+    "abs_min": 5,
+    "abs_max": 7.5
+  },
+  "crop_cycle_days": {
+    "min": 70,
+    "max": 150
+  },
+  "climate_zones": [
+    "tropical wet & dry (Aw)",
+    "tropical wet (Ar)",
+    "steppe or semiarid (Bs)",
+    "subtropical humid (Cf)",
+    "subtropical dry summer (Cs)",
+    "subtropical dry winter (Cw)",
+    "temperate oceanic (Do)",
+    "temperate continental (Dc)",
+    "temperate with humid winters (Df)",
+    "temperate with dry winters (Dw)"
+  ],
+  "_source": {
+    "provider": "FAO ECOCROP",
+    "url": "https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1379",
+    "accessed": "2026-10-03",
+    "attribution": "© FAO ECOCROP",
+    "license_note": "Non-commercial research use with attribution per FAO Terms and Conditions (https://www.fao.org/contact-us/terms/en/)."
+  },
+  "common_name": "tomato"
+}

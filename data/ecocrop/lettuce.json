@@ -1,0 +1,45 @@
+{
+  "name": "Lactuca sativa var. capitata",
+  "ecocrop_id": 1313,
+  "temperature_c": {
+    "opt_min": 12,
+    "opt_max": 21,
+    "abs_min": 5,
+    "abs_max": 30
+  },
+  "rainfall_mm_yr": {
+    "opt_min": 1100,
+    "opt_max": 1400,
+    "abs_min": 900,
+    "abs_max": 4100
+  },
+  "soil_ph": {
+    "opt_min": 6,
+    "opt_max": 7,
+    "abs_min": 4.2,
+    "abs_max": 7.5
+  },
+  "crop_cycle_days": {
+    "min": 35,
+    "max": 85
+  },
+  "climate_zones": [
+    "tropical wet & dry (Aw)",
+    "tropical wet (Ar)",
+    "subtropical humid (Cf)",
+    "subtropical dry summer (Cs)",
+    "subtropical dry winter (Cw)",
+    "temperate oceanic (Do)",
+    "temperate continental (Dc)",
+    "temperate with humid winters (Df)",
+    "temperate with dry winters (Dw)"
+  ],
+  "_source": {
+    "provider": "FAO ECOCROP",
+    "url": "https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1313",
+    "accessed": "2026-10-02",
+    "attribution": "© FAO ECOCROP",
+    "license_note": "Non-commercial research use with attribution per FAO Terms and Conditions (https://www.fao.org/contact-us/terms/en/)."
+  },
+  "common_name": "lettuce"
+}
