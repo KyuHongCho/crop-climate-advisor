@@ -88,7 +88,7 @@ Temperature claims:
   · FAO ECOCROP data sheet, id 1547 (read directly): https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547
   · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
   · Walters & Currey (2019), HortScience 54(11):1915 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
-  Licence: Read through Walters, Tarr & Lopez (2023), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figure summarised from that article; changes were made. Not endorsed by the authors.
+  Licence: Read through Walters, Tarr & Lopez (2023), © 2023 Walters et al., CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figures summarised from that article; changes were made. Not endorsed by the authors.
 ```
 
 This block is not hand-written: `tests/test_cli_format.py` extracts it from this README and
@@ -151,8 +151,8 @@ scored on handling them.
   Both journal figures were read in one article: Walters KJ, Tarr S, Lopez RG (2023), "Modeling purple
   basil, sage, spearmint, and sweet basil responses to daily light integral and mean daily temperature",
   *PLOS ONE* 18(11):e0294905, doi:10.1371/journal.pone.0294905
-  ([open access via PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/)), licensed
-  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). That article reports the 25–30 °C figure
+  ([open access via PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/)), © 2023 Walters et al.,
+  licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). That article reports the 25–30 °C figure
   (at DLI 20–22) from Chang, Alderson & Wright (2005), *J. Hortic. Sci. Biotechnol.* 80:593–598, and the
   29–35 °C figure (at DLI 19.5) from Walters & Currey (2019), *HortScience* 54(11):1915. Both figures
   are summarised here from that article; **changes were made**. The authors do not endorse this project.

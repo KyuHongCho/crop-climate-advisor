@@ -59,7 +59,7 @@ Temperature claims:
   · FAO ECOCROP data sheet, id 1547 (read directly): https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547
   · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
   · Walters & Currey (2019), HortScience 54(11):1915 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
-  Licence: Read through Walters, Tarr & Lopez (2023), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figure summarised from that article; changes were made. Not endorsed by the authors.
+  Licence: Read through Walters, Tarr & Lopez (2023), © 2023 Walters et al., CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figures summarised from that article; changes were made. Not endorsed by the authors.
 """
 
 # Frozen by this slice: these two lines must render exactly as they did before
@@ -107,7 +107,7 @@ Temperature claims:
   · FAO ECOCROP data sheet, id 1547 (read directly): https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547
   · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
   · Walters & Currey (2019), HortScience 54(11):1915 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
-  Licence: Read through Walters, Tarr & Lopez (2023), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figure summarised from that article; changes were made. Not endorsed by the authors.
+  Licence: Read through Walters, Tarr & Lopez (2023), © 2023 Walters et al., CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figures summarised from that article; changes were made. Not endorsed by the authors.
 """
 
 
@@ -203,6 +203,9 @@ class TestLicenceNotice(unittest.TestCase):
         self.assertEqual(len(licence), 1)
         self.assertIn("https://creativecommons.org/licenses/by/4.0/", licence[0])
         self.assertIn("changes were made", licence[0])
+        self.assertIn("© 2023 Walters et al.", licence[0])
+        self.assertIn("Figures summarised", licence[0])
+        self.assertNotIn("Figure summarised", licence[0])
 
     def test_a_non_basil_crop_prints_no_licence_line(self):
         out = run_cli(["--crop", "lettuce", "--lat", "51.5", "--lon", "-0.13", "--place", "London"])

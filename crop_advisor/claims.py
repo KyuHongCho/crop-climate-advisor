@@ -92,8 +92,8 @@ def cite(claim: Claim) -> str:
 
 #: CC BY 4.0 attribution for the one article both journal figures were read in.
 JOURNAL_LICENCE_NOTE = (
-    "Read through Walters, Tarr & Lopez (2023), CC BY 4.0 "
-    "(https://creativecommons.org/licenses/by/4.0/). Figure summarised from that "
+    "Read through Walters, Tarr & Lopez (2023), © 2023 Walters et al., CC BY 4.0 "
+    "(https://creativecommons.org/licenses/by/4.0/). Figures summarised from that "
     "article; changes were made. Not endorsed by the authors."
 )
 

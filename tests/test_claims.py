@@ -57,6 +57,16 @@ class TestJournalClaimsCarryTheCcByNotice(unittest.TestCase):
                 self.assertIn("https://creativecommons.org/licenses/by/4.0/", claim.licence_note or "")
                 self.assertIn("changes were made", claim.licence_note or "")
 
+    def test_both_journal_claims_keep_the_copyright_line_and_the_plural(self):
+        # One note sits beside two figures; CC BY 4.0 s3(a)(1)(A)(ii) asks for the
+        # licensor's copyright notice. Pin both so neither regresses silently.
+        for claim in JOURNAL_TEMPERATURE_CLAIMS:
+            with self.subTest(source=claim.source):
+                note = claim.licence_note or ""
+                self.assertIn("© 2023 Walters et al.", note)
+                self.assertIn("Figures summarised", note)
+                self.assertNotIn("Figure summarised", note)
+
     def test_ecocrop_claim_has_no_licence_note(self):
         self.assertIsNone(temperature_claims(BASIL)[0].licence_note)
 
