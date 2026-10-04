@@ -66,6 +66,9 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
       pr: ${{ steps.decide.outputs.pr }}
+      # Scopes the "did it actually post" checks in `review` and `review-audit` to this run.
+      # Emitted here because this job finishes before any comment the run files.
+      started_at: ${{ steps.decide.outputs.started_at }}
     steps:
       - id: decide
         # Every piece of event data arrives as an env var, never interpolated into the script.
@@ -84,6 +87,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
           # A push invalidates a completed review. Clear the labels so they cannot claim a
           # review that no longer matches the code — but do NOT re-run the agents; that is
@@ -178,6 +182,28 @@ jobs:
             End with a "Verification process" section stating which tests you ran, any
             throwaway test or temporary amendment you made and removed, and the final
             `git status --porcelain`. Mark any finding you could not ground as unverified.
+      # claude-code-action's success reflects only that the agent process ended without an
+      # error, not that `gh pr comment` was ever called. It also exits SUCCESSFULLY without
+      # running the model at all ("Skipping action due to workflow validation") on a PR that
+      # changes this workflow file, so a green job could mean nothing was posted. This step
+      # checks for the actual artifact instead, so a silent skip fails the job and `finalize`
+      # does not label the PR "Review finished". The `jq -s`/`--arg`/`set -euo pipefail`
+      # reasoning is identical to review-audit's copy below -- see the comment there.
+      - name: Confirm the review actually posted its comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ needs.gate.outputs.pr }}
+          GATE_STARTED_AT: ${{ needs.gate.outputs.started_at }}
+        run: |
+          set -euo pipefail
+          : "${GATE_STARTED_AT:?gate emitted no started_at -- refusing to check unscoped}"
+          found=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            | jq -s --arg since "$GATE_STARTED_AT" \
+            '[.[][] | select(.created_at >= $since and (.body | test("^### Review ")))] | length')
+          if [ "$found" -eq 0 ]; then
+            echo "::error::review's agent step exited successfully but never posted its '### Review —' summary comment. Failing this job so finalize does not label the PR 'Review finished'."
+            exit 1
+          fi
 
   review-audit:
     needs: [gate, review]
@@ -233,6 +259,39 @@ jobs:
               * if nothing is wrong, say so and explain why each finding holds
             Append a "Re-verification process" section: what you re-ran, what you amended
             and reverted, and the final `git status --porcelain`.
+      # Same gap as the `review` job's confirm step (see the comment there): the action's
+      # success says nothing about whether `gh pr comment` was called, and it silently skips
+      # the model on a PR that edits this workflow. Check for the actual artifact.
+      - name: Confirm the audit actually posted its comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ needs.gate.outputs.pr }}
+          GATE_STARTED_AT: ${{ needs.gate.outputs.started_at }}
+        run: |
+          set -euo pipefail
+          : "${GATE_STARTED_AT:?gate emitted no started_at -- refusing to check unscoped}"
+          # `gh api`'s `--jq` cannot take `jq`'s `--arg`, and cannot be combined with `--slurp`
+          # either. So the raw, one-array-per-page output is piped into a real `jq -s` (slurp)
+          # call, which both supports `--arg` and merges every page into one array before
+          # filtering -- `--paginate` alone, without slurping, leaves `found` as one number per
+          # page (e.g. "0\n0"), which silently PASSES the check below instead of failing it.
+          # `jq -s` on its own already turns a failed/empty `gh api` call into a clean `found=0`,
+          # so `set -euo pipefail` is NOT what closes that path -- it is here for the one thing
+          # `jq -s` cannot recover from: malformed JSON (e.g. a truncated or non-JSON API
+          # response), where `jq` itself errors with no output, reproducing the silent pass
+          # unless the script aborts first.
+          # The audit is its OWN comment, so it is found by its own heading; the trailing space
+          # after "Review-audit" mirrors the review's "### Review " and tolerates the separator
+          # drifting from the guideline's em dash to a plain hyphen, since an LLM -- not a
+          # template -- produces it. "### Review " does not match "### Review-audit", nor the
+          # reverse.
+          found=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            | jq -s --arg since "$GATE_STARTED_AT" \
+            '[.[][] | select(.created_at >= $since and (.body | test("^### Review-audit ")))] | length')
+          if [ "$found" -eq 0 ]; then
+            echo "::error::review-audit's agent step exited successfully but never posted its '### Review-audit —' comment. Failing this job so finalize does not label the PR 'Review finished'."
+            exit 1
+          fi
 
   # A label must never outlive the run that set it. A failed `review` skips `review-audit`,
   # and a skipped job runs ZERO steps — so a cleanup living inside it would never run. This
