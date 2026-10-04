@@ -88,6 +88,8 @@ def _format(a: Assessment, crop: dict, climate) -> str:
     lines.append("Temperature claims:")
     for c in claims:
         lines.append(f"  · {cite(c)}")
+    for note in dict.fromkeys(c.licence_note for c in claims if c.licence_note):
+        lines.append(f"  Licence: {note}")
     return "\n".join(lines)
 
 

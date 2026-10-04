@@ -86,8 +86,9 @@ Conservative read: 10.39 °C is below optimal.
 Data: NASA POWER (climate) · © FAO ECOCROP (crop requirements).
 Temperature claims:
   · FAO ECOCROP data sheet, id 1547 (read directly): https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547
-  · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Barickman et al. (2021), Plants 10(6):1072): https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/
+  · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
   · Walters & Currey (2019), HortScience 54(11):1915 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
+  Licence: Read through Walters, Tarr & Lopez (2023), © 2023 Walters et al., CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figures summarised from that article; changes were made. Not endorsed by the authors.
 ```
 
 This block is not hand-written: `tests/test_cli_format.py` extracts it from this README and
@@ -117,7 +118,7 @@ Three sources give three different optimal temperature ranges for basil:
 | Source | Optimal | Stated condition |
 |---|---|---|
 | FAO ECOCROP (id 1547) | 18–27 °C | none stated |
-| Chang et al. (2005), via [Barickman et al. 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/) | 25–30 °C | DLI 20–22 mol·m⁻²·d⁻¹ |
+| Chang et al. (2005), via [Walters et al. 2023](https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/) | 25–30 °C | DLI 20–22 mol·m⁻²·d⁻¹ |
 | Walters & Currey (2019), via [Walters et al. 2023](https://doi.org/10.1371/journal.pone.0294905) | 29–35 °C | DLI 19.5 mol·m⁻²·d⁻¹ |
 
 No single window satisfies all three — 18–27 and 25–30 overlap at 25–27, but 29–35 does not intersect
@@ -146,12 +147,16 @@ scored on handling them.
 - **Climate:** [NASA POWER](https://power.larc.nasa.gov/) climatology API (T2M, PRECTOTCORR).
 - **Crop requirements:** © **FAO ECOCROP** — used for non-commercial research with attribution,
   per [FAO Terms and Conditions](https://www.fao.org/contact-us/terms/en/).
-- **Basil optimal-temperature claims** — cited in the CLI's own output (see the example above):
-  Barickman et al. (2021), *Plants* 10(6):1072,
-  doi:10.3390/plants10061072 ([open access via PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/)) — CC BY 4.0. The 25–30 °C
-  figure originates with Chang, Alderson & Wright (2005), *J. Hortic. Sci. Biotechnol.* 80:593–598;
-  the 29–35 °C figure with Walters & Currey (2019), *HortScience* 54(11):1915. Both are cited here
-  **via** the open-access papers linked above, which is how they were verified.
+- **Basil optimal-temperature claims** — cited in the CLI's own output (see the example above).
+  Both journal figures were read in one article: Walters KJ, Tarr S, Lopez RG (2023), "Modeling purple
+  basil, sage, spearmint, and sweet basil responses to daily light integral and mean daily temperature",
+  *PLOS ONE* 18(11):e0294905, doi:10.1371/journal.pone.0294905
+  ([open access via PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/)), © 2023 Walters et al.,
+  licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). That article reports the 25–30 °C figure
+  (at DLI 20–22) from Chang, Alderson & Wright (2005), *J. Hortic. Sci. Biotechnol.* 80:593–598, and the
+  29–35 °C figure (at DLI 19.5) from Walters & Currey (2019), *HortScience* 54(11):1915. Both figures
+  are summarised here from that article; **changes were made**. The authors do not endorse this project.
+  The original 2005 and 2019 papers were not read, and their own licences were not checked.
 
 ## Licence
 

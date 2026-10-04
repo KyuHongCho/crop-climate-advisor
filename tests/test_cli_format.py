@@ -57,8 +57,9 @@ Conservative read: 10.39 °C is below optimal.
 Data: NASA POWER (climate) · © FAO ECOCROP (crop requirements).
 Temperature claims:
   · FAO ECOCROP data sheet, id 1547 (read directly): https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547
-  · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Barickman et al. (2021), Plants 10(6):1072): https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/
+  · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
   · Walters & Currey (2019), HortScience 54(11):1915 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
+  Licence: Read through Walters, Tarr & Lopez (2023), © 2023 Walters et al., CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figures summarised from that article; changes were made. Not endorsed by the authors.
 """
 
 # Frozen by this slice: these two lines must render exactly as they did before
@@ -104,8 +105,9 @@ Conservative read: 28.0 °C is not optimal (sources disagree in direction).
 Data: NASA POWER (climate) · © FAO ECOCROP (crop requirements).
 Temperature claims:
   · FAO ECOCROP data sheet, id 1547 (read directly): https://ecocrop.apps.fao.org/ecocrop/srv/en/dataSheet?id=1547
-  · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Barickman et al. (2021), Plants 10(6):1072): https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/
+  · Chang, Alderson & Wright (2005), J. Hortic. Sci. Biotechnol. 80:593–598 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
   · Walters & Currey (2019), HortScience 54(11):1915 (via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905): https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/
+  Licence: Read through Walters, Tarr & Lopez (2023), © 2023 Walters et al., CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Figures summarised from that article; changes were made. Not endorsed by the authors.
 """
 
 
@@ -189,8 +191,26 @@ class TestRenderedReport(unittest.TestCase):
 
     def test_indirect_sources_are_cited_via_the_paper_actually_read(self):
         out = run_cli()
-        self.assertIn("(via Barickman et al. (2021), Plants 10(6):1072)", out)
-        self.assertIn("(via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905)", out)
+        self.assertEqual(out.count("(via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905)"), 2)
+
+
+class TestLicenceNotice(unittest.TestCase):
+    """CC BY 4.0: credit, licence link and a change notice travel with the figures."""
+
+    def test_basil_prints_the_licence_line_once(self):
+        out = run_cli()
+        licence = [l for l in out.splitlines() if l.startswith("  Licence: ")]
+        self.assertEqual(len(licence), 1)
+        self.assertIn("https://creativecommons.org/licenses/by/4.0/", licence[0])
+        self.assertIn("changes were made", licence[0])
+        self.assertIn("© 2023 Walters et al.", licence[0])
+        self.assertIn("Figures summarised", licence[0])
+        self.assertNotIn("Figure summarised", licence[0])
+
+    def test_a_non_basil_crop_prints_no_licence_line(self):
+        out = run_cli(["--crop", "lettuce", "--lat", "51.5", "--lon", "-0.13", "--place", "London"])
+        self.assertNotIn("Licence:", out)
+        self.assertNotIn("creativecommons.org", out)
 
 
 class TestFrozenLines(unittest.TestCase):

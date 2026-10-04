@@ -25,9 +25,9 @@ class TestCite(unittest.TestCase):
 
     def test_indirect_claim_renders_a_via_form_naming_the_paper_actually_read(self):
         rendered = cite(CHANG_2005)
-        self.assertIn("(via Barickman et al. (2021), Plants 10(6):1072)", rendered)
+        self.assertIn("(via Walters, Tarr & Lopez (2023), PLoS One 18(11):e0294905)", rendered)
         self.assertIn("Chang, Alderson & Wright (2005)", rendered)
-        self.assertIn("https://pmc.ncbi.nlm.nih.gov/articles/PMC8226578/", rendered)
+        self.assertIn("https://pmc.ncbi.nlm.nih.gov/articles/PMC10688745/", rendered)
 
     def test_indirect_claim_with_no_via_raises_rather_than_using_a_placeholder(self):
         # A fallback string here would make every other integrity check vacuous:
@@ -48,6 +48,27 @@ class TestCite(unittest.TestCase):
                 self.assertIn(claim.url, rendered)
                 if not claim.read_directly:
                     self.assertIn("(via ", rendered)
+
+
+class TestJournalClaimsCarryTheCcByNotice(unittest.TestCase):
+    def test_both_journal_claims_link_the_licence_and_state_changes_were_made(self):
+        for claim in JOURNAL_TEMPERATURE_CLAIMS:
+            with self.subTest(source=claim.source):
+                self.assertIn("https://creativecommons.org/licenses/by/4.0/", claim.licence_note or "")
+                self.assertIn("changes were made", claim.licence_note or "")
+
+    def test_both_journal_claims_keep_the_copyright_line_and_the_plural(self):
+        # One note sits beside two figures; CC BY 4.0 s3(a)(1)(A)(ii) asks for the
+        # licensor's copyright notice. Pin both so neither regresses silently.
+        for claim in JOURNAL_TEMPERATURE_CLAIMS:
+            with self.subTest(source=claim.source):
+                note = claim.licence_note or ""
+                self.assertIn("© 2023 Walters et al.", note)
+                self.assertIn("Figures summarised", note)
+                self.assertNotIn("Figure summarised", note)
+
+    def test_ecocrop_claim_has_no_licence_note(self):
+        self.assertIsNone(temperature_claims(BASIL)[0].licence_note)
 
 
 class TestClaimIsFrozen(unittest.TestCase):
