@@ -222,12 +222,13 @@ jobs:
             Reproduce findings yourself with `python -m unittest discover -s tests`. Do not
             take the reviewer's word that a defect is real, nor that the rest is sound.
 
-            Write the updated body to a scratch file outside the checked-out repo (e.g.
-            `cat > /tmp/audit-comment.md <<'EOF' ... EOF`), then EDIT the reviewer's existing
-            comment in place with exactly ONE
-            `gh pr comment ${{ needs.gate.outputs.pr }} --edit-last --body-file /tmp/audit-comment.md`
-            call — do not post a second comment, and never use `gh api` for this (same guardrail
-            as the `review` job above):
+            Write the audit body to a scratch file outside the checked-out repo (e.g.
+            `cat > /tmp/audit-comment.md <<'EOF' ... EOF`), then post it as its OWN new comment,
+            below the reviewer's, with exactly ONE
+            `gh pr comment ${{ needs.gate.outputs.pr }} --body-file /tmp/audit-comment.md`
+            call. Never edit or delete the reviewer's comment: `--edit-last` replaces a comment's
+            WHOLE body, so an audit that writes only its own section silently erases the review. Post no second audit comment, and never use `gh api` for
+            this (same guardrail as the `review` job above):
               * if something is wrong, correct it and say what was wrong
               * if nothing is wrong, say so and explain why each finding holds
             Append a "Re-verification process" section: what you re-ran, what you amended
