@@ -54,6 +54,14 @@ class ReplayTest(unittest.TestCase):
             cli.main(["--crop", "basil", "--lat", "13.75", "--lon", "100.5", "--place", "Bangkok"])
         self.assertIn("Sources disagree:", out.getvalue())
 
+    def test_cli_reports_a_missing_recording_as_a_usage_error(self):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {REPLAY_ENV: str(FIXTURES)}), _offline(), \
+                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exited:
+            cli.main(["--crop", "basil", "--lat", "1", "--lon", "2"])
+        self.assertEqual(exited.exception.code, 2)
+        self.assertIn(REPLAY_MISSING, err.getvalue())
+
     def test_integer_coordinates_name_the_same_file(self):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "51.0_0.0.json").write_text(json.dumps(_response(10.0, 2.0)))

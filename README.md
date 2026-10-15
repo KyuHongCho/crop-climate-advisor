@@ -167,7 +167,9 @@ subject to the [FAO Terms and Conditions](https://www.fao.org/contact-us/terms/e
 (non-commercial research, with attribution). Climate figures are retrieved live from NASA POWER,
 except in `evals/fixtures/nasa_power/`: four trimmed NASA POWER climatology responses (T2M and
 PRECTOTCORR only, for London, Lagos, Bangkok and Djibouti), which `CROP_ADVISOR_CLIMATE_REPLAY`
-replays offline. "There are no restrictions on the use, access, and/or download of data from the NASA
+replays offline (only these four exact coordinates; any other location raises
+`CROP_ADVISOR_REPLAY_MISSING`).
+"There are no restrictions on the use, access, and/or download of data from the NASA
 POWER Project", which asks to be cited ([AWS Open Data registry](https://registry.opendata.aws/nasa-power/),
 licence listed as [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). The data was obtained from National Aeronautics and Space Administration
 (NASA) Langley Research Center's Prediction Of Worldwide Energy Resources (POWER) project funded through

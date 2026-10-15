@@ -102,7 +102,10 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
 
     crop = load_crop(args.crop)
-    climate = fetch_climate(args.lat, args.lon)
+    try:
+        climate = fetch_climate(args.lat, args.lon)
+    except FileNotFoundError as e:
+        ap.error(str(e))
     result = assess(crop, climate, place=args.place or f"{args.lat},{args.lon}")
     print(_format(result, crop, climate))
 
