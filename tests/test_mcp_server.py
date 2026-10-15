@@ -16,7 +16,7 @@ from unittest import mock
 
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from crop_advisor.climate import ClimateSummary
+from crop_advisor.climate import REPLAY_ENV, ClimateSummary
 from crop_advisor.mcp_server import mcp
 
 EXPECTED_KEYS = {
@@ -112,6 +112,12 @@ class TestGetClimateOffline(unittest.IsolatedAsyncioTestCase):
 )
 class TestGetClimateLive(unittest.IsolatedAsyncioTestCase):
     """Opt-in: proves the tool returns real NASA POWER data."""
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(REPLAY_ENV, None)
 
     async def test_london_returns_real_climate_data(self):
         async with create_connected_server_and_client_session(mcp) as session:
