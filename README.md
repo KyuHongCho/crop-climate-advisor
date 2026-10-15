@@ -164,8 +164,15 @@ The **source code** in this repository is MIT licensed — see [LICENSE](LICENSE
 
 That grant does **not** extend to the bundled data. `data/ecocrop/` is © FAO ECOCROP and remains
 subject to the [FAO Terms and Conditions](https://www.fao.org/contact-us/terms/en/) quoted above
-(non-commercial research, with attribution). Climate figures are retrieved live from NASA POWER and
-are not redistributed here.
+(non-commercial research, with attribution). Climate figures are retrieved live from NASA POWER,
+except in `evals/fixtures/nasa_power/`: four trimmed NASA POWER climatology responses (T2M and
+PRECTOTCORR only, for London, Lagos, Bangkok and Djibouti), which `CROP_ADVISOR_CLIMATE_REPLAY`
+replays offline. "There are no restrictions on the use, access, and/or download of data from the NASA
+POWER Project", which asks to be cited ([AWS Open Data registry](https://registry.opendata.aws/nasa-power/),
+licence listed as [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). The data was obtained from National Aeronautics and Space Administration
+(NASA) Langley Research Center's Prediction Of Worldwide Energy Resources (POWER) project funded through
+the NASA Earth Science Division; the service version and access date are in
+[`SOURCE.md`](evals/fixtures/nasa_power/SOURCE.md).
 
 ## Project layout
 
@@ -175,6 +182,7 @@ crop_advisor/           # the app: climate.py, ecocrop.py, suitability.py, cli.p
                         #          mcp_server.py (MCP wrapper around the climate call)
 data/ecocrop/           # bundled, scraped-once crop requirements (JSON)
 scripts/scrape_ecocrop.py   # one-time ECOCROP scraper
+evals/                  # model-behaviour eval: record_fixtures.py, fixtures/nasa_power/ (replayed climate)
 tests/                  # offline unit tests (+ one opt-in live NASA POWER test)
 ```
 
