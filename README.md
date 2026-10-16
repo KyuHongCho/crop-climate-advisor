@@ -14,8 +14,9 @@ tool — built as real, working code with transparently reported status.
 > A working end-to-end slice runs today for seven crops (basil, lettuce, strawberry, tomato, cucumber,
 > sweet-pepper, kale) — and for **basil** its optimal temperature is reported as three attributed,
 > disagreeing published claims rather than one (the other six show their FAO ECOCROP claim only) —
-> and the NASA POWER climate lookup is exposed as an **MCP server**. The eval harness that would
-> *score* how that disagreement is handled, the RAG layer, and the Agent Skill are **not built**.
+> and the NASA POWER climate lookup is exposed as an **MCP server**. The **Agent Skill** is written,
+> and one eval trial at a time runs through it, but nothing *scores* how that disagreement is handled
+> yet, and the RAG layer is **not built**.
 > See [What works / What's planned](#what-works--whats-planned).
 > This README describes only what actually runs; planned work is labelled as such.
 
@@ -29,9 +30,9 @@ tool — built as real, working code with transparently reported status.
 | ✅ | CLI + offline unit tests | **working** |
 | ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
 | ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — for basil only (journal claims are attached to ECOCROP id 1547; the other crops show the ECOCROP claim alone) the CLI prints all three and derives from their intersection that no single window satisfies them all; for the queried location it also reports where that location falls relative to each claim, flags it when the sources point in opposite directions there, and prints a conservative read that never calls a site optimal unless every source does |
-| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | planned |
+| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | **partly built** — one trial per command, with or without the Skill, writes a record with a status (see [The Agent Skill](#the-agent-skill)); no grading, statistics or repeated runs yet |
 | ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
-| ⏳ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | planned |
+| ✅ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | **written** — `.agents/skills/crop-suitability/`; Claude Code invokes it and runs the CLI, but whether it improves the answers is not yet measured |
 
 ## Quickstart
 
@@ -184,7 +185,9 @@ crop_advisor/           # the app: climate.py, ecocrop.py, suitability.py, cli.p
                         #          mcp_server.py (MCP wrapper around the climate call)
 data/ecocrop/           # bundled, scraped-once crop requirements (JSON)
 scripts/scrape_ecocrop.py   # one-time ECOCROP scraper
-evals/                  # model-behaviour eval: record_fixtures.py, fixtures/nasa_power/ (replayed climate)
+evals/                  # model-behaviour eval: trial.py, adapters/claude_code.py, status.py, record.py,
+                        #   cases.json, config.json, record_fixtures.py, fixtures/nasa_power/ (replayed climate)
+.agents/skills/crop-suitability/   # the Agent Skill: SKILL.md + reference/
 tests/                  # offline unit tests (+ one opt-in live NASA POWER test)
 ```
 
@@ -211,3 +214,51 @@ the migration for a stdio server this small is a two-line change.
 Tests drive the server through a real MCP client session (`initialize` →
 `list_tools` → `call_tool`) rather than calling the Python function directly — a
 direct call would exercise `fetch_climate`, not the MCP layer.
+
+## The Agent Skill
+
+`.agents/skills/crop-suitability/SKILL.md` tells an agent when to use this project, how to run the
+CLI, and how to report its result: every temperature claim attributed, the opposite-directions flag
+passed on, and no site called optimal without qualification. `reference/temperature-claims.md`
+explains basil's three claims and is read only when needed.
+
+Claude Code discovers project skills under `.claude/skills/`. To install it in a checkout:
+
+```bash
+mkdir -p .claude/skills && ln -s ../../.agents/skills/crop-suitability .claude/skills/
+```
+
+One eval trial runs Claude Code on one case, with or without the Skill, and writes a JSON record.
+It needs a logged-in `claude` on `PATH` and spends real money (capped at $0.50 a trial, a cap the CLI
+can overshoot by one turn):
+
+```bash
+python -m evals.trial --adapter claude_code --case bangkok --model claude-sonnet-5-5 --condition skill
+python -m evals.trial --adapter claude_code --case bangkok --model claude-sonnet-5-5 --condition no-skill
+```
+
+Each trial runs in a fresh temporary workspace holding copies of `crop_advisor/` and `data/` (plus
+the Skill, for `skill`) and no `CLAUDE.md` or hooks. The CLI answers from the recorded climate in
+`evals/fixtures/nasa_power/`, kept outside that workspace. Claude Code's bundled skills are switched
+off (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`), and in the `skill` condition the skills it still lists
+from its built-in plugins are denied with `--disallowedTools "Skill(skill:<name>)"` rules, so
+`crop-suitability` is the only skill the subject can run. If Claude Code lists any other skill,
+the trial records `harness-error` naming it: add the skill to `DENIED_SKILLS` in `evals/status.py`
+(the adapter's deny rules follow from it), update the tests that pin the 2.1.301 listing, and re-run.
+If the `skill` condition's subject is not offered `crop-suitability` at all, the trial also records
+`harness-error`. Sessions are not saved (`--no-session-persistence`) and auto memory is off
+(`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`), so trials leave no transcript folders behind. The record's
+`status` (`ok`, `runaway`, `contract-violation`, `infra-error` or `harness-error`) is computed from
+its `status_inputs` alone, by `evals/status.py`.
+
+**Your own instruction files stop every trial.** `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` keeps Claude Code
+from loading `CLAUDE.md` files into the subject, and a guard detects what might still get through: the
+trial refuses to run and records `harness-error` when any of these exist:
+
+- `CLAUDE.md`, `CLAUDE.local.md` or `rules/**/*.md` in your Claude Code config folder
+  (`$CLAUDE_CONFIG_DIR`, by default `~/.claude`);
+- `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md` or `.claude/rules/**/*.md` in any folder above
+  the temporary workspace.
+
+Move or rename those files while you run trials, then put them back. Pointing `CLAUDE_CONFIG_DIR` at
+an empty folder logs `claude` out; whether adding `CLAUDE_CODE_OAUTH_TOKEN` gets past that is untested.
