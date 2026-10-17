@@ -33,7 +33,8 @@ def load(path=DEFAULT_PATH) -> dict:
     if not isinstance(config, dict):
         raise ConfigError(f"{path}: must be a JSON object")
     subjects, judge = config.get("subjects"), config.get("judge")
-    if not subjects or not isinstance(subjects, list) or not isinstance(judge, str):
+    if (not subjects or not isinstance(subjects, list) or not isinstance(judge, str)
+            or not all(isinstance(s, str) for s in subjects)):
         raise ConfigError(f"{path}: needs a non-empty 'subjects' list and a 'judge' id")
     check_judge_independent(judge, subjects)
     for key in ("trial_budget_usd", "trial_timeout_s"):

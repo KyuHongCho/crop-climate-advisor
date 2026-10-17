@@ -23,7 +23,8 @@ def main(argv=None) -> int:
     ap.add_argument("--condition", required=True, choices=claude_code.CONDITIONS)
     ap.add_argument("--config", default=str(config.DEFAULT_PATH))
     ap.add_argument("--cases", default=str(cases.DEFAULT_PATH))
-    ap.add_argument("--timeout", type=float, default=None, help="harness timeout in seconds, > 0 (default: config)")
+    ap.add_argument("--timeout", type=float, default=None,
+                    help="harness timeout in seconds, a finite number > 0 (default: config)")
     ap.add_argument("--out", default=None, help="record path (default: a new file under the system temp dir)")
     args = ap.parse_args(argv)
     if args.timeout is not None and not config.positive_number(args.timeout):
@@ -39,9 +40,10 @@ def main(argv=None) -> int:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     trial_id = f"{case['id']}-{args.condition}-{args.model}-{stamp}-{uuid.uuid4().hex[:8]}"
+    timeout = cfg["trial_timeout_s"] if args.timeout is None else args.timeout
     rec = ADAPTERS[args.adapter].run_trial(
         case=case, eval_set=eval_set, model=args.model, condition=args.condition,
-        budget_usd=cfg["trial_budget_usd"], timeout=cfg["trial_timeout_s"] if args.timeout is None else args.timeout, trial_id=trial_id)
+        budget_usd=cfg["trial_budget_usd"], timeout=timeout, trial_id=trial_id)
     out = Path(args.out) if args.out else Path(tempfile.gettempdir()) / "crop-eval-trials" / f"{trial_id}.json"
     record.write(rec, out)
     print(f"{rec['status']} (rule {rec['status_rule']}: {rec['status_reason']}) -> {out}")

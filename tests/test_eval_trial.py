@@ -463,7 +463,9 @@ class RunTrialTest(unittest.TestCase):
 class TrialCommandTest(unittest.TestCase):
     def _main(self, args, rec=None):
         out, err = io.StringIO(), io.StringIO()
-        fake = mock.patch.object(claude_code, "run_trial", return_value=rec) if rec else contextlib.nullcontext()
+        # Without a record the test must stop before any trial; the default binary would be a live claude.
+        stop = AssertionError("this test must stop before a trial runs")
+        fake = mock.patch.object(claude_code, "run_trial", **({"return_value": rec} if rec else {"side_effect": stop}))
         with fake, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
                 code = trial.main(args)

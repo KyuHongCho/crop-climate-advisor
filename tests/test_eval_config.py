@@ -42,6 +42,12 @@ class ConfigTest(unittest.TestCase):
                 with self.assertRaises(config.ConfigError):
                     config.load(_write(d, payload))
 
+    def test_non_string_subjects_are_refused(self):
+        for subjects in ([1], [None], [{}], ["claude-sonnet-5-5", 7]):
+            with self.subTest(subjects=subjects), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(config.ConfigError):
+                    config.load(_write(d, {"subjects": subjects, "judge": "claude-opus-5-5", **LIMITS}))
+
     def test_a_bad_config_shape_budget_or_timeout_is_refused(self):
         good = {"subjects": ["claude-sonnet-5-5"], "judge": "claude-opus-5-5", **LIMITS}
         bad = [[], "x"] + [{**good, key: value} for key in LIMITS
@@ -86,6 +92,21 @@ class CasesTest(unittest.TestCase):
                                                          "place": "Bangkok", "prompt": "basil at 13.7, 100.5?"}]})
             with self.assertRaises(ValueError):
                 cases.load(path)
+
+    def test_a_malformed_cases_file_is_refused(self):
+        good = {"id": "bangkok", "site": "bangkok", "crop": "basil", "place": "Bangkok",
+                "prompt": "Basil in Bangkok (latitude 13.75, longitude 100.5)?"}
+        bad = {"a JSON list": [], "no cases": {"version": "1"}, "cases not a list": {"cases": {"bangkok": good}},
+               "empty cases": {"cases": []}, "a case not an object": {"cases": ["bangkok"]},
+               "numeric prompt": {"cases": [{**good, "prompt": 5}]}, "numeric id": {"cases": [{**good, "id": 7}]},
+               "unknown site": {"cases": [{**good, "site": "paris"}]},
+               "non-string site": {"cases": [{**good, "site": ["bangkok"]}]}}
+        for name, payload in bad.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(ValueError):
+                    cases.load(_write(d, payload))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(cases.load(_write(d, {"cases": [good]}))["cases"][0]["lat"], 13.75)
 
     def test_get(self):
         _, case = cases.get("bangkok")
