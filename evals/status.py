@@ -76,6 +76,11 @@ def classify_status(si: dict) -> Status:
         return Status("harness-error", "1c", f"the subject was not offered {SKILL_NAME}", ("harness-error",))
     if listed is not None and condition == "no-skill" and SKILL_NAME in listed:
         return Status("harness-error", "1c", f"the no-skill subject was offered {SKILL_NAME}", ("harness-error",))
+    conflict = si.get("redaction_conflict")
+    if conflict:
+        # The recorded verdict stands in for one the redacted text can no longer reproduce; it holds no input text.
+        return Status(conflict["status"], "1d", f"redaction changed the verdict from rule {conflict['rule']} to rule "
+                      f"{conflict['redacted_rule']}; the raw verdict is kept", (*conflict["tags"], "redaction-conflict"))
     if si.get("timed_out") or si.get("signal") is not None:
         why = "timed out" if si.get("timed_out") else f"killed by signal {si['signal']}"
         return Status("infra-error", "2", why, ("infra-error",))

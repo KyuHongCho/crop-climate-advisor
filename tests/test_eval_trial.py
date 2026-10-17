@@ -1,8 +1,10 @@
 """One Claude Code trial, offline: argv, workspace, environment, stream parsing and the record."""
 import contextlib
+import getpass
 import io
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -13,6 +15,14 @@ from unittest import mock
 from crop_advisor.climate import REPLAY_ENV
 from evals import cases, record, status, trial
 from evals.adapters import claude_code
+
+
+def setUpModule():
+    # The username rewrite is machine-dependent, so pin a name no fixture word can collide with.
+    patcher = mock.patch.dict(os.environ, {"USER": "testuser", "LOGNAME": "testuser", "USERNAME": "testuser"})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "fixtures" / "claude_code"
 PROMPT = "Is basil suited to Bangkok (latitude 13.75, longitude 100.5)?"
@@ -26,7 +36,7 @@ def _sample_lines(name):
             enumerate((SAMPLES_DIR / name).read_text(encoding="utf-8").splitlines(keepends=True))]
 
 
-def _fake_claude(directory, stream=None, exit_code=0, sleep=0, env_dump=None, emit=None):
+def _fake_claude(directory, stream=None, exit_code=0, sleep=0, env_dump=None, emit=None, script=None):
     """A stand-in `claude`: answers --version, otherwise prints a stored stream."""
     path = Path(directory) / "claude"
     body = ["#!/bin/sh", 'if [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi']
@@ -38,6 +48,8 @@ def _fake_claude(directory, stream=None, exit_code=0, sleep=0, env_dump=None, em
         body.append(f'cat "{SAMPLES_DIR / stream}"')
     if emit:
         body.append(f'"{sys.executable}" -c \'{emit}\'')
+    if script:
+        body.append(f'"{sys.executable}" "{script}"')
     body.append(f"exit {exit_code}")
     path.write_text("\n".join(body) + "\n")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -217,11 +229,13 @@ class ParseTest(unittest.TestCase):
         si = rec["status_inputs"]
         self.assertEqual(set(si), {"exit_code", "signal", "timed_out", "harness_exception", "stderr_tail",
                                    "stream_parsed", "result_event", "cli_tool_results", "permission_denials",
-                                   "bash_commands", "read_paths", "skill_calls", "listed_skills", "condition"})
+                                   "bash_commands", "read_paths", "skill_calls", "listed_skills", "condition",
+                                   "redaction_conflict"})
         self.assertEqual(si["skill_calls"], ["crop-suitability"])
         self.assertEqual(si["listed_skills"], parsed["init"]["skills"])
         self.assertEqual(si["bash_commands"], [parsed["tool_calls"][1]["input"]["command"]])
         self.assertEqual((si["exit_code"], si["stderr_tail"], si["condition"]), (0, "warn\n", "skill"))
+        self.assertIsNone(si["redaction_conflict"])
         self.assertEqual(si["result_event"], parsed["result_event"])
         self.assertEqual((rec["status"], rec["status_rule"]), ("ok", "11"))
         self.assertEqual(rec["subject"]["canonical_model"], "claude-haiku-5-5")
@@ -303,7 +317,7 @@ class RedactionTest(unittest.TestCase):
 
     def test_tail_is_capped_and_redacted_before_the_cut(self):
         secret = "sk-" + "a" * 100
-        tail = record.stderr_tail("x" * 10000 + secret + "y" * (record.STDERR_TAIL_CHARS - 20), env={})
+        tail = record.stderr_tail("x" * 10000 + " " + secret + "y" * (record.STDERR_TAIL_CHARS - 20), env={})
         self.assertLessEqual(len(tail), record.STDERR_TAIL_CHARS)
         self.assertNotIn("aaaa", tail)
 
@@ -314,6 +328,348 @@ class RedactionTest(unittest.TestCase):
                                     parsed={}, env={})
         self.assertNotIn("zzz", rec["status_inputs"]["stderr_tail"])
         self.assertEqual(len(rec["status_inputs"]["stderr_tail"]), record.STDERR_TAIL_CHARS)
+
+
+# Claude Code's project-folder names, read off its own folders next to the cwd in their session files.
+# The per-user hash and the username are replaced; the third pair's cwd is inferred from the folder listing.
+SLUG_PINS = (
+    ("/private/var/folders/ab/cdef0123456789_xyz/T/crop-eval-3_m677mn/workspace",
+     "-private-var-folders-ab-cdef0123456789-xyz-T-crop-eval-3-m677mn-workspace"),
+    ("/Users/jane.doe77/Workspace/agentic-workflow", "-Users-jane-doe77-Workspace-agentic-workflow"),
+    ("/private/tmp/claude-501/-Users-jane-doe77-Workspace/0a1b/scratchpad/ws",
+     "-private-tmp-claude-501--Users-jane-doe77-Workspace-0a1b-scratchpad-ws"),
+)
+FAKE_HOME, FAKE_USER, KEY = "/home/alice_q7", "alice_q7", "sk-" + "Zq9_" * 8
+CLI = "python -m crop_advisor.cli --crop basil --lat 13.75 --lon 100.5"
+
+# Plants every secret and path in each place the record copies text from, then reports what it planted.
+PLANTER = r'''
+import getpass, json, os, re, sys, tempfile
+real = os.path.dirname(os.getcwd())
+plain = os.path.join(tempfile.gettempdir(), os.path.basename(real))
+slug = lambda path: re.sub(r"[^A-Za-z0-9]", "-", path)
+home, uid_dir = os.path.expanduser("~"), "/tmp/claude-%d/scratch" % os.getuid()
+secrets = [os.environ["CLAUDE_CODE_OAUTH_TOKEN"], "sk-" + "Zq9_" * 8, "hdr.PLANTEDvalue"]
+forbid = secrets + [plain, real, slug(plain), slug(real), home, getpass.getuser(), uid_dir]
+text = " | ".join(["Bearer hdr.PLANTEDvalue", *forbid[:2], *forbid[3:]])
+json.dump({"forbid": forbid, "text": text}, open(os.environ["PLANT_OUT"], "w"))
+emit = lambda event: print(json.dumps(event), flush=True)
+emit({"type": "system", "subtype": "init", "skills": ["crop-suitability"], "cwd": real,
+      "memory_paths": {"auto": home + "/.claude/projects/" + slug(real) + "/memory/"}})
+emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b", "name": "Bash", "input": {
+    "command": "python -m crop_advisor.cli --crop basil --lat 13.75 --lon 100.5 --place \"" + text + "\""}}]}})
+emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b",
+                                                "content": "Crop-Climate Advisor " + text}]}})
+emit({"type": "result", "subtype": "success", "is_error": False, "result": "answer " + text,
+      "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": "cat " + text}}],
+      "modelUsage": {"claude-haiku-5-5": {"canonicalModel": "claude-haiku-5-5"}}})
+print("warning " + text, file=sys.stderr)
+'''
+
+
+def _whole_word(word, text):
+    return re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text)
+
+
+def _skill_inputs(command, **overrides):
+    event = {"type": "result", "subtype": "success", "is_error": False, "result": "an answer"}
+    fields = dict(condition="skill", exit_code=0, stream_parsed=True, result_event=event,
+                  cli_tool_results=["out"], bash_commands=[command])
+    return record.status_inputs(**{**fields, **overrides})
+
+
+def _build(inputs, base=None, **parts):
+    fields = dict(identity={"case_id": "bangkok", "trial_id": "t"}, subject={}, condition={"condition": "skill"},
+                  output={"answer": None, "tool_calls": []}, usage={}, inputs=inputs, base=base, env={})
+    return record.build(**{**fields, **parts})
+
+
+class SecretPatternTest(unittest.TestCase):
+    def test_words_that_contain_sk_are_not_redacted(self):
+        text = "a risk-free, task-timed run; ask-the-expert-for-anything-at-all-here"
+        self.assertEqual(record.redact(text, {}), text)
+
+    def test_a_key_keeps_its_underscores_and_needs_20_characters(self):
+        self.assertEqual(record.redact("key sk-ab_cd-" + "e" * 14, {}), f"key {record.REDACTED}")
+        self.assertEqual(record.redact("sk-" + "a" * 19, {}), "sk-" + "a" * 19)
+        self.assertEqual(record.redact("sk-" + "a" * 20, {}), record.REDACTED)
+
+    def test_a_bearer_value_stops_at_a_shell_metacharacter(self):
+        for tail in (";cat x", "&ls", "|ls", ">f", "<f", "`id`", "$(id)", "'", '"', ")", "\\n"):
+            with self.subTest(tail=tail):
+                self.assertEqual(record.redact(f"Bearer abc.def{tail}", {}), f"{record.REDACTED}{tail}")
+
+    def test_bearer_never_swallows_a_newline_or_what_follows_it(self):
+        for text in ("Bearer\nls", "Bearer \nls", "Bearer\r\nls", "Bearer $(cat ~/.netrc)", "Bearer"):
+            with self.subTest(text=text):
+                self.assertEqual(record.redact(text, {}), text)
+        self.assertEqual(record.redact("Bearer \tabc\nls", {}), f"{record.REDACTED}\nls")
+
+
+class SlugTest(unittest.TestCase):
+    def test_slug_matches_the_captured_folder_names(self):
+        for path, folder in SLUG_PINS:
+            with self.subTest(path=path):
+                self.assertEqual(record.slug(path), folder)
+
+    def test_slug_matches_the_memory_paths_in_every_stored_stream(self):
+        checked = 0
+        for stream in sorted(SAMPLES_DIR.glob("*.jsonl")):
+            for line in stream.read_text(encoding="utf-8").splitlines():
+                if '"memory_paths"' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "cwd" in event:
+                    with self.subTest(stream=stream.name):
+                        self.assertIn(f"/projects/{record.slug(event['cwd'])}/", event["memory_paths"]["auto"])
+                        checked += 1
+        self.assertGreater(checked, 10)
+
+
+class PathRewriteTest(unittest.TestCase):
+    def _rewrite(self, base=None, **kw):
+        return record.rewriter(base, home=kw.pop("home", FAKE_HOME), uid=kw.pop("uid", 1234),
+                               user=kw.pop("user", FAKE_USER), **kw)
+
+    def test_each_runtime_value_is_replaced(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = Path(d).resolve() / "real"
+            real.mkdir()
+            link = Path(d).resolve() / "link"
+            link.symlink_to(real)
+            rewrite = self._rewrite(link)
+            text = (f"{link}/workspace {real}/workspace {record.slug(link)}-workspace {record.slug(real)}-x "
+                    f"{FAKE_HOME}/.ssh -home-alice-q7-p /tmp/claude-1234/s/f {FAKE_USER} ran")
+            self.assertEqual(rewrite(text), "/TMP/trial/workspace /TMP/trial/workspace -TMP-trial-workspace "
+                                            "-TMP-trial-x /HOME/.ssh -HOME-p /TMP/claude/s/f user ran")
+
+    def test_the_longest_match_wins(self):
+        base = f"{FAKE_HOME}/tmp/crop-eval-x"
+        self.assertEqual(self._rewrite(base)(f"{base}/workspace and {FAKE_HOME}/tmp/other"),
+                         "/TMP/trial/workspace and /HOME/tmp/other")
+
+    def test_the_longest_match_wins_when_home_is_a_prefix_of_the_uid_folder(self):
+        rewrite = record.rewriter(None, home="/tmp", uid=501, user="")
+        self.assertEqual(rewrite("/tmp/claude-501/x /tmp/y"), "/TMP/claude/x /HOME/y")
+
+    def test_the_username_is_replaced_only_as_a_whole_word(self):
+        rewrite = self._rewrite()
+        self.assertEqual(rewrite(f"{FAKE_USER}, ({FAKE_USER}) m{FAKE_USER} {FAKE_USER}x x_{FAKE_USER}"),
+                         f"user, (user) m{FAKE_USER} {FAKE_USER}x x_{FAKE_USER}")
+
+    def test_an_unknown_base_leaves_only_the_home_uid_and_user_rewrites(self):
+        text = "/var/folders/ab/c/T/crop-eval-x/workspace /tmp/claude-1234/a /home/alice_q7/b alice_q7"
+        self.assertEqual(self._rewrite(None)(text),
+                         "/var/folders/ab/c/T/crop-eval-x/workspace /TMP/claude/a /HOME/b user")
+
+    def test_a_replacement_is_never_rewritten_again(self):
+        self.assertEqual(self._rewrite(user="TMP")("/tmp/claude-1234/a TMP"), "/TMP/claude/a user")
+
+    def test_a_root_home_does_not_mangle_every_slash(self):
+        self.assertEqual(record.rewriter(None, home="/", uid=1234, user="")("a/b/c"), "a/b/c")
+
+    def test_the_machines_own_values_are_used_by_default(self):
+        with mock.patch.dict(os.environ, {"HOME": FAKE_HOME, "USER": FAKE_USER, "LOGNAME": FAKE_USER}):
+            self.assertEqual(record.rewriter()(f"{FAKE_HOME}/x {FAKE_USER} /tmp/claude-{os.getuid()}/y"),
+                             "/HOME/x user /TMP/claude/y")
+
+    def test_the_tail_is_scrubbed_before_it_is_cut(self):
+        base = Path(tempfile.gettempdir()) / "crop-eval-leaky"
+        # The raw 4 KB tail would start 20 characters before the end of the base path.
+        stderr = "q" * 100 + f"{base}/workspace/" + "y" * (record.STDERR_TAIL_CHARS - len("/workspace/") - 20)
+        self.assertIn("leaky", stderr[-record.STDERR_TAIL_CHARS:])
+        tail = record.stderr_tail(stderr, {}, base)
+        self.assertNotIn("leaky", tail)
+        self.assertIn("/TMP/trial/workspace/", tail)
+        self.assertEqual(len(tail), record.STDERR_TAIL_CHARS)
+
+    def test_the_adapter_scrubs_the_tail_before_cutting_it(self):
+        base = Path(tempfile.gettempdir()) / "crop-eval-leaky"
+        stderr = "q" * 100 + f"{base}/workspace/" + "y" * (record.STDERR_TAIL_CHARS - len("/workspace/") - 20)
+        self.assertIn(str(base)[-20:], stderr[-record.STDERR_TAIL_CHARS:])
+        rec = claude_code.to_record(case={"id": "c", "prompt": "p"}, eval_set={}, trial_id="t", model="m",
+                                    condition="no-skill", cli_version_=None, parsed={}, env={}, base=base,
+                                    run_result={"stderr": stderr, "exit_code": 1})
+        tail = rec["status_inputs"]["stderr_tail"]
+        self.assertIn("/TMP/trial/workspace/", tail)
+        for fragment in ("leaky", str(base)[-20:], str(base)[-8:]):
+            self.assertNotIn(fragment, json.dumps(rec))
+
+
+class BuildRedactionTest(unittest.TestCase):
+    def test_every_string_in_the_record_is_scrubbed_except_the_exempt_ones(self):
+        secret = "Bearer s3cret.value"
+        nested = {"a": [secret, {"b": secret}], "n": 5, "ok": True, "none": None}
+        user = "design"  # also a listed skill, which rule 1b must still see by its real name
+        with mock.patch.dict(os.environ, {"HOME": FAKE_HOME, "USER": user, "LOGNAME": user}):
+            rec = _build(
+                _skill_inputs(CLI, stderr_tail=secret, permission_denials=[nested], read_paths=[f"{FAKE_HOME}/x"],
+                              skill_calls=[secret], listed_skills=["crop-suitability", user]),
+                identity={"case_id": user, "trial_id": f"t-{user}"}, subject={"model": user},
+                condition={"condition": "skill", "skill_sha256": user, "note": secret},
+                output={"prompt": secret, "answer": f"{secret} {user}", "tool_calls": [nested]},
+                usage={"tokens": {"tier": secret}})
+        si = rec["status_inputs"]
+        self.assertNotIn("s3cret", json.dumps(rec))
+        self.assertEqual(si["permission_denials"], [{"a": [record.REDACTED, {"b": record.REDACTED}], "n": 5,
+                                                     "ok": True, "none": None}])
+        self.assertEqual((si["read_paths"], si["stderr_tail"]), (["/HOME/x"], record.REDACTED))
+        self.assertEqual(rec["output"]["answer"], f"{record.REDACTED} user")
+        self.assertEqual(rec["usage"], {"tokens": {"tier": record.REDACTED}})
+        self.assertEqual((rec["case_id"], rec["trial_id"], rec["subject"]), (user, f"t-{user}", {"model": user}))
+        self.assertEqual(rec["condition"], {"condition": "skill", "skill_sha256": user, "note": record.REDACTED})
+        self.assertEqual(si["listed_skills"], ["crop-suitability", user])
+
+    def test_the_words_risk_free_and_task_timed_survive_the_whole_record(self):
+        rec = _build(_skill_inputs(CLI), output={"answer": "risk-free and task-timed", "tool_calls": []})
+        self.assertEqual(rec["output"]["answer"], "risk-free and task-timed")
+
+    def test_off_contract_bash_with_a_secret_beside_a_metacharacter_stays_9b(self):
+        for command in (f"{CLI} --place Bearer $(cat ~/.netrc)", f"{CLI} --place Bearer\nls",
+                        f"{CLI} --place Bearer abc.def;cat x", f"{CLI} --place \"sk-{'a' * 30}\"; cat x"):
+            with self.subTest(command=command):
+                rec = _build(_skill_inputs(command))
+                self.assertEqual((rec["status"], rec["status_rule"], rec["tags"]),
+                                 ("contract-violation", "9b", ["contract-violation", "off-contract-tool"]))
+                self.assertIsNone(rec["status_inputs"]["redaction_conflict"])
+
+    def test_the_stored_reason_comes_from_the_redacted_inputs_and_holds_no_cut_secret(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = str(Path(d) / "crop-eval-cutme")
+            head = "python -m crop_advisor.cli; cat "
+            layouts = {"base across 200": head + "z" * (169 - len(head)) + " " + base + " " + KEY,
+                       "key across 200": head + "z" * (184 - len(head)) + " " + KEY + " " + base}
+            for name, command in layouts.items():
+                with self.subTest(layout=name):
+                    cut = [x for x in (base, KEY) if command.index(x) < 200 < command.index(x) + len(x)]
+                    self.assertEqual(len(cut), 1)
+                    raw = status.classify_status(_skill_inputs(command))
+                    self.assertIn(cut[0][:10], raw.reason)
+                    rec = _build(_skill_inputs(command), base=base)
+                    self.assertEqual((rec["status"], rec["status_rule"]), ("contract-violation", "9b"))
+                    for leaked in ("sk-", "Zq9_", "cutme", "crop-eval", Path(d).name):
+                        self.assertNotIn(leaked, rec["status_reason"])
+                    if cut[0] == base:
+                        self.assertIn("/TMP/trial", rec["status_reason"])
+
+    def test_a_forced_conflict_keeps_the_raw_verdict_as_rule_1d(self):
+        command = f"{CLI} --place Bearer abc.def;cat x"
+        eats_semicolon = (re.compile(r"Bearer[ \t]+\S+"),)
+        with mock.patch.object(record, "_SECRET_PATTERNS", eats_semicolon), tempfile.TemporaryDirectory() as d:
+            rec = _build(_skill_inputs(command))
+            path = record.write(rec, Path(d) / "r.json")
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+        self.assertEqual((rec["status"], rec["status_rule"]), ("contract-violation", "1d"))
+        self.assertEqual(rec["tags"], ["contract-violation", "off-contract-tool", "redaction-conflict"])
+        self.assertEqual(rec["status_inputs"]["redaction_conflict"],
+                         {"status": "contract-violation", "rule": "9b", "redacted_rule": "11",
+                          "tags": ["contract-violation", "off-contract-tool"]})
+        self.assertEqual(rec["status_reason"],
+                         "redaction changed the verdict from rule 9b to rule 11; the raw verdict is kept")
+        self.assertEqual(status.classify_status(saved["status_inputs"])[:2], ("contract-violation", "1d"))
+        self.assertNotIn("abc.def", text)
+
+    def test_a_conflict_cannot_turn_an_off_contract_call_into_ok(self):
+        eats_semicolon = (re.compile(r"Bearer[ \t]+\S+"),)
+        with mock.patch.object(record, "_SECRET_PATTERNS", eats_semicolon):
+            rec = _build(_skill_inputs(f"{CLI} --place Bearer abc.def;cat x"))
+        self.assertEqual(status.classify_status(rec["status_inputs"]).status, "contract-violation")
+        self.assertNotEqual(rec["status"], "ok")
+
+    def test_a_conflict_that_moves_only_the_rule_is_still_recorded_as_1d(self):
+        eats_semicolon = (re.compile(r"Bearer[ \t]+\S+"),)
+        command = f"{CLI} --place Bearer abc.def;cat x"
+        raw = status.classify_status(_skill_inputs(command, cli_tool_results=[]))
+        self.assertEqual((raw.status, raw.rule), ("contract-violation", "9b"))
+        with mock.patch.object(record, "_SECRET_PATTERNS", eats_semicolon):
+            rec = _build(_skill_inputs(command, cli_tool_results=[]))
+        self.assertEqual((rec["status"], rec["status_rule"]), ("contract-violation", "1d"))
+        self.assertEqual(rec["status_inputs"]["redaction_conflict"],
+                         {"status": "contract-violation", "rule": "9b", "redacted_rule": "10",
+                          "tags": ["contract-violation", "off-contract-tool"]})
+        self.assertEqual(rec["tags"], ["contract-violation", "off-contract-tool", "redaction-conflict"])
+
+
+class PlantedValuesTest(unittest.TestCase):
+    def _env(self, d):
+        return mock.patch.dict(os.environ, {"HOME": FAKE_HOME, "USER": FAKE_USER, "LOGNAME": FAKE_USER,
+                                            record.TOKEN_ENV: "tok-PLANTED-0123456789",
+                                            "PLANT_OUT": str(Path(d) / "planted.json")})
+
+    def _assert_clean(self, rec, forbid, d):
+        text = record.write(rec, Path(d) / "rec.json").read_text(encoding="utf-8")
+        for value in forbid:
+            with self.subTest(planted=value):
+                found = _whole_word(value, text) if value == FAKE_USER else value in text
+                self.assertFalse(found, value)
+        return text
+
+    def test_a_trial_record_holds_none_of_the_planted_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = Path(d) / "plant.py"
+            script.write_text(PLANTER)
+            _, case = cases.get("bangkok")
+            with self._env(d), mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": d}):
+                rec = claude_code.run_trial(case=case, eval_set={"version": "1"}, model="claude-haiku-5-5",
+                                            condition="skill", budget_usd=0.5, timeout=30, trial_id="t",
+                                            binary=_fake_claude(d, script=script))
+            planted = json.loads((Path(d) / "planted.json").read_text())
+            text = self._assert_clean(rec, planted["forbid"], d)
+            self.assertEqual(len(planted["forbid"]), 10)
+            for expected in ("/TMP/trial", "-TMP-trial", "/HOME", "/TMP/claude", "user", record.REDACTED):
+                self.assertIn(expected, text)
+            self.assertEqual((rec["status"], rec["status_rule"]), ("contract-violation", "9"))
+            si = rec["status_inputs"]
+            for field in (rec["output"]["answer"], rec["output"]["tool_calls"][0]["result"],
+                          rec["output"]["tool_calls"][0]["input"]["command"], si["stderr_tail"],
+                          si["permission_denials"][0]["tool_input"]["command"], si["bash_commands"][0],
+                          si["cli_tool_results"][0], si["result_event"]["result"]):
+                self.assertIn("/TMP/trial", field)
+            self.assertIsNone(si["redaction_conflict"])
+            self.assertEqual(status.classify_status(json.loads(text)["status_inputs"]).rule, "9")
+
+    def test_a_harness_exception_is_scrubbed_too(self):
+        _, case = cases.get("bangkok")
+        seen = []
+
+        def leaks(workspace, env):
+            seen.append(Path(workspace).parent)
+            return [Path(workspace) / "CLAUDE.md", Path(FAKE_HOME) / "CLAUDE.md", Path("/x") / KEY]
+
+        with tempfile.TemporaryDirectory() as d, self._env(d), mock.patch.object(claude_code, "memory_leaks", leaks), \
+                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": d}):
+            rec = claude_code.run_trial(case=case, eval_set={"version": "1"}, model="claude-haiku-5-5",
+                                        condition="no-skill", budget_usd=0.5, timeout=5, trial_id="t",
+                                        binary=_fake_claude(d, "no_skill_ok.jsonl"))
+            self.assertEqual((rec["status"], rec["status_rule"]), ("harness-error", "1"))
+            self.assertIn("/TMP/trial/workspace/CLAUDE.md, /HOME/CLAUDE.md, /x/[REDACTED]",
+                          rec["status_inputs"]["harness_exception"])
+            self._assert_clean(rec, [KEY, FAKE_HOME, str(seen[0]), seen[0].name], d)
+
+    def test_the_rule_1_fallback_record_is_scrubbed_with_the_same_base(self):
+        real, calls = claude_code.to_record, []
+
+        def first_call_fails(**kw):
+            calls.append(kw)
+            if len(calls) == 1:
+                raise RuntimeError(f"boom in {kw['base']}/workspace")
+            return real(**kw)
+
+        _, case = cases.get("bangkok")
+        with tempfile.TemporaryDirectory() as d, self._env(d), \
+                mock.patch.object(claude_code, "to_record", first_call_fails), \
+                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": d}):
+            rec = claude_code.run_trial(case=case, eval_set={"version": "1"}, model="claude-haiku-5-5",
+                                        condition="no-skill", budget_usd=0.5, timeout=30, trial_id="t",
+                                        binary=_fake_claude(d, stream="no_skill_ok.jsonl"))
+        self.assertEqual(calls[0]["base"], calls[1]["base"])
+        self.assertIn("record build failed: RuntimeError: boom in /TMP/trial/workspace",
+                      rec["status_inputs"]["harness_exception"])
+        self.assertNotIn(calls[0]["base"], json.dumps(rec))
 
 
 class SkillHashTest(unittest.TestCase):

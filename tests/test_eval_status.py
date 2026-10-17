@@ -1,11 +1,22 @@
 """classify_status: the ordered rules, the pinned overlaps, and every stored stream-json sample."""
 import json
+import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from evals import record
 from evals.adapters import claude_code
 from evals.record import status_inputs
 from evals.status import classify_status
+
+
+def setUpModule():
+    # The username rewrite is machine-dependent, so pin a name no fixture word can collide with.
+    patcher = mock.patch.dict(os.environ, {"USER": "testuser", "LOGNAME": "testuser", "USERNAME": "testuser"})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "fixtures" / "claude_code"
 SAMPLES = json.loads((SAMPLES_DIR / "samples.json").read_text(encoding="utf-8"))["samples"]
@@ -70,6 +81,16 @@ class StoredSamplesTest(unittest.TestCase):
             with self.subTest(sample=name):
                 self.assertEqual(by_name[name]["expected_rule"], rule)
         self.assertTrue(by_name["exit0_null_result"]["synthesised"])
+
+    def test_redaction_never_changes_the_rule_of_a_stored_sample(self):
+        self.assertEqual(len(SAMPLES), 25)
+        for sample in SAMPLES:
+            seen, real_build = [], record.build
+            with self.subTest(sample=sample["name"]), mock.patch.object(
+                    record, "build", lambda **kw: seen.append(kw["inputs"]) or real_build(**kw)):
+                rec = sample_record(sample)
+                self.assertEqual(classify_status(seen[0])[:2], classify_status(rec["status_inputs"])[:2])
+                self.assertIsNone(rec["status_inputs"]["redaction_conflict"])
 
     def test_every_rule_has_a_sample(self):
         self.assertEqual({s["expected_rule"] for s in SAMPLES},
@@ -312,6 +333,35 @@ class RuleOrderTest(unittest.TestCase):
                           {"exit_code": 1, "result_event": {"subtype": "error_max_turns", "result": None}}):
             with self.subTest(**{k: str(v) for k, v in overrides.items()}):
                 self.assertEqual(classify_status(_si(condition="skill", listed_skills=missing, **overrides)).rule, "1c")
+
+    def test_a_redaction_conflict_returns_the_recorded_raw_verdict(self):
+        conflict = {"status": "contract-violation", "rule": "9b", "redacted_rule": "11",
+                    "tags": ["contract-violation", "off-contract-tool"]}
+        got = classify_status(_si(condition="skill", cli_tool_results=["out"], redaction_conflict=conflict))
+        self.assertEqual((got.status, got.rule, got.tags),
+                         ("contract-violation", "1d", ("contract-violation", "off-contract-tool", "redaction-conflict")))
+        self.assertEqual(got.reason, "redaction changed the verdict from rule 9b to rule 11; the raw verdict is kept")
+        ok = classify_status(_si(redaction_conflict={"status": "ok", "rule": "11", "redacted_rule": "9", "tags": []}))
+        self.assertEqual((ok.status, ok.rule, ok.tags), ("ok", "1d", ("redaction-conflict",)))
+        self.assertEqual(classify_status(_si(redaction_conflict=None)).rule, "11")
+        si = _si()
+        del si["redaction_conflict"]
+        self.assertEqual(classify_status(si).rule, "11")
+
+    def test_rule_1d_sits_after_1c_and_before_the_rest(self):
+        conflict = {"status": "contract-violation", "rule": "9b", "redacted_rule": "11", "tags": ["contract-violation"]}
+        self.assertEqual(classify_status(_si(harness_exception="x", redaction_conflict=conflict)).rule, "1")
+        self.assertEqual(classify_status(_si(condition="skill", listed_skills=["crop-suitability", "code-review"],
+                                             redaction_conflict=conflict)).rule, "1b")
+        self.assertEqual(classify_status(_si(condition="skill", listed_skills=["design"],
+                                             redaction_conflict=conflict)).rule, "1c")
+        self.assertEqual(classify_status(_si(listed_skills=["crop-suitability"], redaction_conflict=conflict)).rule, "1c")
+        for overrides in ({"timed_out": True, "exit_code": None},
+                          {"exit_code": 1, "result_event": {"subtype": "error_max_turns", "result": None}},
+                          {"exit_code": 1, "result_event": {"subtype": "error_something_new", "result": None}},
+                          {"permission_denials": [{"tool_name": "Bash"}]}):
+            with self.subTest(**{k: str(v) for k, v in overrides.items()}):
+                self.assertEqual(classify_status(_si(redaction_conflict=conflict, **overrides)).rule, "1d")
 
     def test_a_harness_exception_wins_over_everything(self):
         si = _si(harness_exception="RuntimeError: x", timed_out=True)
