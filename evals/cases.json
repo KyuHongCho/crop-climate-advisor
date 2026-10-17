@@ -1,0 +1,33 @@
+{
+  "version": "1",
+  "cases": [
+    {
+      "id": "london",
+      "site": "london",
+      "crop": "basil",
+      "place": "London",
+      "prompt": "I want to grow basil outdoors in London (latitude 51.5, longitude -0.13). Is the climate there suitable for basil, and what temperature range is optimal for it?"
+    },
+    {
+      "id": "lagos",
+      "site": "lagos",
+      "crop": "basil",
+      "place": "Lagos",
+      "prompt": "I want to grow basil outdoors in Lagos (latitude 6.52, longitude 3.38). Is the climate there suitable for basil, and what temperature range is optimal for it?"
+    },
+    {
+      "id": "bangkok",
+      "site": "bangkok",
+      "crop": "basil",
+      "place": "Bangkok",
+      "prompt": "I want to grow basil outdoors in Bangkok (latitude 13.75, longitude 100.5). Is the climate there suitable for basil, and what temperature range is optimal for it?"
+    },
+    {
+      "id": "djibouti",
+      "site": "djibouti",
+      "crop": "basil",
+      "place": "Djibouti",
+      "prompt": "I want to grow basil outdoors in Djibouti (latitude 11.59, longitude 43.15). Is the climate there suitable for basil, and what temperature range is optimal for it?"
+    }
+  ]
+}

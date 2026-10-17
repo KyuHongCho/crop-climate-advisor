@@ -1,0 +1,6 @@
+{
+  "subjects": ["claude-sonnet-5-5", "claude-haiku-5-5"],
+  "judge": "claude-opus-5-5",
+  "trial_budget_usd": 0.50,
+  "trial_timeout_s": 300
+}
