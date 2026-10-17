@@ -112,6 +112,22 @@ class RuleOrderTest(unittest.TestCase):
         si = _si(exit_code=1, result_event=None, stderr_tail="API Error: 401 invalid x-api-key")
         self.assertEqual(classify_status(si)[:2], ("harness-error", "4b"))
 
+    def test_api_error_text_in_stderr_does_not_void_a_successful_answer(self):
+        success = {"subtype": "success", "is_error": False, "result": "x"}
+        for stderr in ("API Error: 529 overloaded, retrying", "rate_limit_error: slow down"):
+            with self.subTest(stderr=stderr):
+                self.assertEqual(classify_status(_si(result_event=success, stderr_tail=stderr))[:2], ("ok", "11"))
+                skill = _si(condition="skill", cli_tool_results=["out"], result_event=success, stderr_tail=stderr)
+                self.assertEqual(classify_status(skill)[:2], ("ok", "11"))
+        failed = _si(exit_code=1, result_event={"subtype": "success", "is_error": True, "result": None},
+                     stderr_tail="API Error: 401 invalid x-api-key")
+        self.assertEqual(classify_status(failed)[:2], ("harness-error", "4b"))
+        no_result = _si(exit_code=1, result_event=None, stderr_tail="API Error: 529 overloaded")
+        self.assertEqual(classify_status(no_result)[:2], ("infra-error", "4a"))
+        reported = _si(exit_code=1, result_event={"subtype": "success", "is_error": False, "api_error_status": 529,
+                                                  "result": "x"})
+        self.assertEqual(classify_status(reported)[:2], ("infra-error", "4a"))
+
     def test_an_unknown_error_subtype_is_a_harness_error(self):
         si = _si(exit_code=1, result_event={"subtype": "error_something_new", "result": None})
         self.assertEqual(classify_status(si)[:2], ("harness-error", "4c"))

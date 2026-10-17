@@ -36,7 +36,9 @@ def _api_error(si: dict):
     http = event.get("api_error_status")
     stderr = si.get("stderr_tail") or ""
     stderr_hit = _STDERR_API_ERROR.search(stderr)
-    if http is None and not subtype.startswith("error_") and not stderr_hit:
+    # A success result event outranks API-error text in stderr; Claude Code reports retries on stdout (system/api_retry).
+    succeeded = event.get("subtype") == "success" and not event.get("is_error")
+    if http is None and not subtype.startswith("error_") and (not stderr_hit or succeeded):
         return None
     if http is None:
         m = _STDERR_API_STATUS.search(stderr)
