@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from crop_advisor.climate import REPLAY_ENV
-from evals import cases, record, status, trial
+from evals import cases, graders, record, status, trial
 from evals.adapters import claude_code
 
 
@@ -947,6 +947,39 @@ class TrialCommandTest(unittest.TestCase):
                                        "--out", str(Path(d) / "r.json")], rec)
         self.assertEqual(code, 0)
         self.assertIn("harness-error: the no-skill subject was offered crop-suitability", err)
+
+    def _login_args(self, d):
+        return ["--adapter", "claude_code", "--case", "bangkok", "--model", "claude-sonnet-5-5",
+                "--condition", "skill", "--out", str(Path(d) / "r.json")]
+
+    def test_a_login_that_is_a_word_the_graders_read_stops_the_trial_before_it_starts(self):
+        entries = {"crop": "--crop", "m": "-m", "light": "daily light integral"}
+        for login in ("basil", "skill", "Chang", "Currey", "crop", "m", "to", "light"):
+            with self.subTest(login=login), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.dict(os.environ, {"LOGNAME": login, "USER": login, "USERNAME": login}):
+                code, out, err = self._main(self._login_args(d))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(repr(entries.get(login, login)), err)
+                self.assertEqual([w for w in graders.GRADED_WORDS if repr(w) in err], [entries.get(login, login)])
+                self.assertIn("LOGNAME=eval USER=eval", err)
+                self.assertIn("not scrubbed where it appears as a bare word", err)
+                self.assertFalse((Path(d) / "r.json").exists())
+
+    def test_other_logins_run_and_write_a_record(self):
+        for login in ("testuser", "kyuhong.cho77", "eval", "runner", "user", "TMP", "claude"):
+            with self.subTest(login=login), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.dict(os.environ, {"LOGNAME": login, "USER": login, "USERNAME": login}):
+                code, _, err = self._main(self._login_args(d), self._record(["claude-sonnet-5-5"]))
+                self.assertEqual((code, err), (0, ""))
+                self.assertTrue((Path(d) / "r.json").exists())
+
+    def test_a_failing_getuser_does_not_stop_the_trial(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ), \
+                mock.patch.object(getpass, "getuser", side_effect=OSError):
+            for name in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+                os.environ.pop(name, None)
+            code, _, err = self._main(self._login_args(d), self._record(["claude-sonnet-5-5"]))
+        self.assertEqual((code, err), (0, ""))
 
     def test_unknown_case_is_refused(self):
         code, _, err = self._main(["--adapter", "claude_code", "--case", "paris", "--model",

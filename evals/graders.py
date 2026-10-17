@@ -4,6 +4,7 @@ from typing import NamedTuple
 
 from crop_advisor import claims, ecocrop
 
+from . import record
 from .status import CLI_CALL
 
 # Keyed by the claim's label before " (", so a claim added to claims.py without a name here fails loudly.
@@ -18,6 +19,10 @@ DLI_WINDOW = 80
 EXCLUDED = ("infra-error", "harness-error")
 TAGS = {"D1": "missing-source", "D2": "missing-band", "D3": "missing-condition", "D4": "no-tool-call"}
 WRONG_CLI_ARGS = "wrong-cli-args"
+# Every literal a grader or the status rules read from the redacted record; keep in step with the regexes above.
+GRADED_WORDS = ("Bash", "skill", "python", "python3", "-m", "crop_advisor.cli", "--crop", "--lat", "--lon", "basil",
+                "ECOCROP", "Chang", "Currey", "DLI", "daily light integral", "mol", "to", "between", "and",
+                "degrees", "Celsius")
 
 
 class Grade(NamedTuple):
@@ -157,3 +162,16 @@ def grade(record: dict, case: dict) -> dict:
     return {"trial_id": record.get("trial_id"), "case_id": record.get("case_id"), "status": status,
             "status_rule": record.get("status_rule"), "status_reason": record.get("status_reason"),
             "criteria": grades, "tags": tags, "passed": passed}
+
+
+def login_error():
+    """None, or the message that refuses a login the username rewrite would turn into a different grade."""
+    rewrite = record.rewriter()
+    changed = [w for w in GRADED_WORDS if rewrite(w) != w]
+    if not changed:
+        return None
+    return (f"your login name is a word the graders read ({', '.join(repr(w) for w in changed)}): the stored record "
+            "would show 'user' there and the grade would silently change. Run the same command under another "
+            "name, e.g. LOGNAME=eval USER=eval python -m evals.trial ...; under that name your real login is not "
+            "scrubbed where it appears as a bare word; it is itself a word the graders read, so a search cannot "
+            "tell it from the legitimate word.")

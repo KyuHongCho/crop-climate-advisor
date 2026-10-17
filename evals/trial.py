@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import cases, config, record
+from . import cases, config, graders, record
 from .adapters import claude_code
 
 ADAPTERS = {"claude_code": claude_code}
@@ -27,6 +27,9 @@ def main(argv=None) -> int:
                     help="harness timeout in seconds, a finite number > 0 (default: config)")
     ap.add_argument("--out", default=None, help="record path (default: a new file under the system temp dir)")
     args = ap.parse_args(argv)
+    msg = graders.login_error()
+    if msg:
+        ap.error(msg)
     if args.timeout is not None and not config.positive_number(args.timeout):
         ap.error(f"--timeout must be a finite number greater than 0, not {args.timeout:g}")
 

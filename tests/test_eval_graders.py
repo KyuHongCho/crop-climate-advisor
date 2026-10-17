@@ -1,8 +1,10 @@
 """Deterministic graders D1-D4: a passing and a failing answer for each, the triage tags, and `evals.score`."""
 import contextlib
+import getpass
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -358,6 +360,15 @@ class ScoreCommandTest(unittest.TestCase):
             self.assertIn("(case custom)", out)
             self.assertEqual(self._main(str(path))[0], 2)
 
+    def test_scoring_is_not_guarded_by_the_login(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, _ = self._record_file(d, "skill_ok.jsonl", "skill")
+            with mock.patch.dict(os.environ, {"LOGNAME": "skill", "USER": "skill", "USERNAME": "skill"}):
+                self.assertIsNotNone(graders.login_error())
+                code, out, err = self._main(str(path))
+        self.assertEqual((code, err), (0, ""))
+        self.assertRegex(out, r"(?m)^D1\s+(pass|fail)")
+
     def test_an_unreadable_record_or_unknown_case_exits_2_with_a_clean_error(self):
         with tempfile.TemporaryDirectory() as d:
             missing = str(Path(d) / "none.json")
@@ -381,6 +392,56 @@ class ScoreCommandTest(unittest.TestCase):
         self.assertEqual(ok.returncode, 0, ok.stderr)
         self.assertRegex(ok.stdout, r"(?m)^D1\s+(pass|fail)")
         self.assertEqual(bad.returncode, 2)
+
+
+def _login(login):
+    return mock.patch.dict(os.environ, {"LOGNAME": login, "USER": login, "USERNAME": login})
+
+
+class LoginGuardTest(unittest.TestCase):
+    def test_every_literal_the_graders_search_for_is_in_the_list(self):
+        names = [re.sub(r"\\b", "", pattern) for pattern in graders.SOURCE_NAMES.values()]
+        markers = [re.sub(r"\\b", "", alt).replace(r"\s+", " ") for alt in graders.DLI_MARKER.pattern.split("|")]
+        self.assertEqual(markers, ["DLI", "daily light integral", "mol"])
+        for word in names + markers:
+            with self.subTest(word=word):
+                self.assertIn(word, graders.GRADED_WORDS)
+
+    def test_a_login_equal_to_any_token_of_a_graded_word_is_refused_and_names_the_entry(self):
+        for word in graders.GRADED_WORDS:
+            login = max(re.findall(r"\w+", word), key=len)  # a login cannot hold spaces or dashes
+            with self.subTest(word=word, login=login), _login(login):
+                msg = graders.login_error()
+                self.assertIn(repr(word), msg)
+                expected = {w for w in graders.GRADED_WORDS if re.search(rf"(?<!\w){re.escape(login)}(?!\w)", w)}
+                self.assertEqual({w for w in graders.GRADED_WORDS if repr(w) in msg}, expected)
+
+    def test_every_entry_the_login_changes_is_named(self):
+        with mock.patch.object(graders, "GRADED_WORDS", ("--x", "a x b", "xy", "y")), _login("x"):
+            msg = graders.login_error()
+        self.assertEqual([w for w in ("--x", "a x b", "xy", "y") if repr(w) in msg], ["--x", "a x b"])
+
+    def test_phrases_and_flags_are_probed_as_written(self):
+        for login, entry in (("light", "daily light integral"), ("daily", "daily light integral"),
+                             ("integral", "daily light integral"), ("crop", "--crop"), ("m", "-m"),
+                             ("cli", "crop_advisor.cli"), ("lat", "--lat")):
+            with self.subTest(login=login), _login(login):
+                self.assertIn(repr(entry), graders.login_error())
+
+    def test_the_message_states_cause_effect_and_workaround_and_never_says_to_search(self):
+        with _login("basil"):
+            msg = graders.login_error()
+        for part in ("is a word the graders read", "'user'", "silently change", "LOGNAME=eval USER=eval",
+                     "not scrubbed where it appears as a bare word"):
+            self.assertIn(part, msg)
+        self.assertNotRegex(msg, r"(?i)\bgrep\b|\bsearch (the|your) record")
+
+    def test_other_logins_and_a_failing_getuser_pass(self):
+        for login in ("testuser", "kyuhong.cho77", "eval", "runner", "user", "TMP", "claude", "chang", "75"):
+            with self.subTest(login=login), _login(login):
+                self.assertIsNone(graders.login_error())
+        with mock.patch.object(getpass, "getuser", side_effect=OSError):
+            self.assertIsNone(graders.login_error())
 
 
 if __name__ == "__main__":
