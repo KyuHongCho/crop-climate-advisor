@@ -559,6 +559,37 @@ class TrialCommandTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("not a configured subject", err)
 
+    def test_timeout_must_be_positive(self):
+        for value in ("0", "-1"):
+            with self.subTest(timeout=value), tempfile.TemporaryDirectory() as d:
+                # A stand-in run_trial, so a broken check can never start a live trial.
+                code, _, err = self._main(["--adapter", "claude_code", "--case", "bangkok", "--model",
+                                           "claude-sonnet-5-5", "--condition", "skill", "--timeout", value,
+                                           "--out", str(Path(d) / "r.json")], self._record(["claude-sonnet-5-5"]))
+                self.assertEqual(code, 2)
+                self.assertIn("--timeout must be greater than 0", err)
+
+    def test_timeout_is_passed_through_or_taken_from_config(self):
+        for given, expected in ((None, 300), ("0.5", 0.5), ("42", 42.0)):
+            with self.subTest(timeout=given), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(claude_code, "run_trial", return_value=self._record(["claude-sonnet-5-5"])) as run:
+                args = ["--adapter", "claude_code", "--case", "bangkok", "--model", "claude-sonnet-5-5",
+                        "--condition", "skill", "--out", str(Path(d) / "r.json")]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = trial.main(args + (["--timeout", given] if given else []))
+            self.assertEqual(code, 0)
+            self.assertEqual(run.call_args.kwargs["timeout"], expected)
+
+    def test_rule_1c_is_named_on_stderr(self):
+        rec = {"status": "harness-error", "status_rule": "1c",
+               "status_reason": "the no-skill subject was offered crop-suitability", "subject": {"canonical_models": []}}
+        with tempfile.TemporaryDirectory() as d:
+            code, _, err = self._main(["--adapter", "claude_code", "--case", "bangkok", "--model",
+                                       "claude-sonnet-5-5", "--condition", "no-skill",
+                                       "--out", str(Path(d) / "r.json")], rec)
+        self.assertEqual(code, 0)
+        self.assertIn("harness-error: the no-skill subject was offered crop-suitability", err)
+
     def test_unknown_case_is_refused(self):
         code, _, err = self._main(["--adapter", "claude_code", "--case", "paris", "--model",
                                    "claude-sonnet-5-5", "--condition", "skill"])

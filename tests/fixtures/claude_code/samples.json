@@ -198,7 +198,7 @@
     },
     {
       "name": "no_skill_denied",
-      "stream": "skill_denied_no_cli_call.jsonl",
+      "stream": "no_skill_denied.jsonl",
       "stderr": "",
       "exit_code": 0,
       "signal": null,
@@ -208,7 +208,7 @@
       "expected_status": "ok",
       "expected_rule": "9",
       "synthesised": true,
-      "provenance": "synthesised: the same stream as skill_denied_no_cli_call, labelled no-skill condition"
+      "provenance": "synthesised: the same probe stream as skill_denied_no_cli_call, labelled no-skill condition; its init skills list was replaced with the current no-skill one (the live Sonnet no-skill trial's)"
     },
     {
       "name": "skill_read_only_bash_no_denial",

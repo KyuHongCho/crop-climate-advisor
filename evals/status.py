@@ -71,8 +71,11 @@ def classify_status(si: dict) -> Status:
     if extra:
         return Status("harness-error", "1b", f"the subject was also offered {', '.join(extra)}; "
                       "add them to DENIED_SKILLS in evals/status.py", ("harness-error",))
-    if condition == "skill" and si.get("listed_skills") is not None and SKILL_NAME not in si["listed_skills"]:
+    listed = si.get("listed_skills")
+    if listed is not None and condition == "skill" and SKILL_NAME not in listed:
         return Status("harness-error", "1c", f"the subject was not offered {SKILL_NAME}", ("harness-error",))
+    if listed is not None and condition == "no-skill" and SKILL_NAME in listed:
+        return Status("harness-error", "1c", f"the no-skill subject was offered {SKILL_NAME}", ("harness-error",))
     if si.get("timed_out") or si.get("signal") is not None:
         why = "timed out" if si.get("timed_out") else f"killed by signal {si['signal']}"
         return Status("infra-error", "2", why, ("infra-error",))
@@ -113,6 +116,8 @@ def classify_status(si: dict) -> Status:
                       OFF_CONTRACT)
     if condition == "skill" and not cli_results:
         return Status("contract-violation", "10", "skill condition made no CLI call", ("contract-violation", "no-tool-call"))
+    if event.get("is_error"):
+        return Status("harness-error", "11", "result event is an error", ("harness-error",))
     if event.get("result") is not None:
         return Status("ok", "11", "answered", ())
     return Status("harness-error", "11", "result event carries no answer", ("harness-error",))

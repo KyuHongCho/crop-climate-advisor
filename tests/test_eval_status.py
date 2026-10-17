@@ -244,7 +244,8 @@ class RuleOrderTest(unittest.TestCase):
         self.assertEqual((got.status, got.rule, got.tags), ("harness-error", "1b", ("harness-error",)))
         self.assertIn("code-review", got.reason)
         self.assertIn("add them to DENIED_SKILLS in evals/status.py", got.reason)
-        self.assertEqual(classify_status(_si(listed_skills=listed + ["code-review"])).status, "ok")
+        # The no-skill arm ignores extra skills (1b); offering it crop-suitability is rule 1c, tested below.
+        self.assertEqual(classify_status(_si(listed_skills=["design", "code-review"])).status, "ok")
 
     def test_no_init_event_does_not_trip_the_listed_skills_rules(self):
         self.assertEqual(classify_status(_si(condition="skill", cli_tool_results=["out"], listed_skills=None)).status,
@@ -273,6 +274,35 @@ class RuleOrderTest(unittest.TestCase):
         self.assertEqual(classify_status(_si(listed_skills=["design"])).status, "ok")
         offered = _si(condition="skill", listed_skills=["crop-suitability", "design"])
         self.assertEqual(classify_status(offered).rule, "10")
+
+    def test_no_skill_subject_offered_the_skill_is_a_harness_error(self):
+        got = classify_status(_si(listed_skills=["crop-suitability", "design"]))
+        self.assertEqual((got.status, got.rule, got.reason, got.tags),
+                         ("harness-error", "1c", "the no-skill subject was offered crop-suitability", ("harness-error",)))
+        for listed in (None, [], ["design", "doctor", "plugin-authoring"]):
+            with self.subTest(listed=listed):
+                self.assertEqual(classify_status(_si(listed_skills=listed)).status, "ok")
+        si = _si()
+        del si["listed_skills"]
+        self.assertEqual(classify_status(si).status, "ok")
+
+    def test_no_skill_1c_rule_order(self):
+        offered = ["crop-suitability"]
+        self.assertEqual(classify_status(_si(harness_exception="x", listed_skills=offered)).rule, "1")
+        for overrides in ({"timed_out": True, "exit_code": None},
+                          {"exit_code": 1, "result_event": {"subtype": "error_max_turns", "result": None}}):
+            with self.subTest(**{k: str(v) for k, v in overrides.items()}):
+                self.assertEqual(classify_status(_si(listed_skills=offered, **overrides)).rule, "1c")
+
+    def test_an_error_result_event_is_not_an_answer(self):
+        for condition, extra in (("no-skill", {}), ("skill", {"cli_tool_results": ["out"]})):
+            with self.subTest(condition=condition):
+                got = classify_status(_si(condition=condition, result_event={
+                    "subtype": "success", "is_error": True, "result": "API Error: rate limit"}, **extra))
+                self.assertEqual((got.status, got.rule, got.reason), ("harness-error", "11", "result event is an error"))
+                ok = classify_status(_si(condition=condition, result_event={
+                    "subtype": "success", "is_error": False, "result": "answer"}, **extra))
+                self.assertEqual(ok[:2], ("ok", "11"))
 
     def test_skill_not_offered_rule_order(self):
         missing = ["design"]
