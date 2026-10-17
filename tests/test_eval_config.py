@@ -14,6 +14,9 @@ def _write(d, payload, name="c.json"):
     return path
 
 
+LIMITS = {"trial_budget_usd": 0.5, "trial_timeout_s": 300}
+
+
 class ConfigTest(unittest.TestCase):
     def test_the_committed_config_pins_exact_ids(self):
         cfg = config.load()
@@ -25,18 +28,34 @@ class ConfigTest(unittest.TestCase):
         for judge in ("claude-sonnet-5-5", "claude-sonnet-4-6", "claude-haiku-9"):
             with self.subTest(judge=judge), tempfile.TemporaryDirectory() as d:
                 with self.assertRaises(config.ConfigError):
-                    config.load(_write(d, {"subjects": ["claude-sonnet-5-5", "claude-haiku-5-5"], "judge": judge}))
+                    config.load(_write(d, {"subjects": ["claude-sonnet-5-5", "claude-haiku-5-5"], "judge": judge,
+                                           **LIMITS}))
 
     def test_an_unreadable_model_id_is_refused(self):
         with self.assertRaises(config.ConfigError):
             config.family("gpt-5")
 
     def test_missing_subjects_or_judge_is_refused(self):
-        for payload in ({"judge": "claude-opus-5-5"}, {"subjects": [], "judge": "claude-opus-5-5"},
-                        {"subjects": ["claude-sonnet-5-5"]}):
+        for payload in ({"judge": "claude-opus-5-5", **LIMITS}, {"subjects": [], "judge": "claude-opus-5-5", **LIMITS},
+                        {"subjects": ["claude-sonnet-5-5"], **LIMITS}):
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as d:
                 with self.assertRaises(config.ConfigError):
                     config.load(_write(d, payload))
+
+    def test_a_bad_config_shape_budget_or_timeout_is_refused(self):
+        good = {"subjects": ["claude-sonnet-5-5"], "judge": "claude-opus-5-5", **LIMITS}
+        bad = [[], "x"] + [{**good, key: value} for key in LIMITS
+                           for value in (None, 0, -1, True, "0.5", float("inf"), 10 ** 400)]
+        bad += [{k: v for k, v in good.items() if k != key} for key in LIMITS]
+        for payload in bad:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(config.ConfigError):
+                    config.load(_write(d, payload))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(config.load(_write(d, {**good, "trial_budget_usd": 1}))["trial_budget_usd"], 1)
+        with tempfile.TemporaryDirectory() as d, self.assertRaisesRegex(
+                config.ConfigError, "'trial_timeout_s' must be a finite number greater than 0"):
+            config.load(_write(d, {**good, "trial_timeout_s": float("inf")}))
 
     def test_record_time_r3(self):
         config.check_canonical("claude-sonnet-5-5", ["claude-sonnet-5-5"])

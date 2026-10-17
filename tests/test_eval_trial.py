@@ -560,14 +560,14 @@ class TrialCommandTest(unittest.TestCase):
         self.assertIn("not a configured subject", err)
 
     def test_timeout_must_be_positive(self):
-        for value in ("0", "-1"):
+        for value in ("0", "-1", "nan", "inf"):
             with self.subTest(timeout=value), tempfile.TemporaryDirectory() as d:
                 # A stand-in run_trial, so a broken check can never start a live trial.
                 code, _, err = self._main(["--adapter", "claude_code", "--case", "bangkok", "--model",
                                            "claude-sonnet-5-5", "--condition", "skill", "--timeout", value,
                                            "--out", str(Path(d) / "r.json")], self._record(["claude-sonnet-5-5"]))
                 self.assertEqual(code, 2)
-                self.assertIn("--timeout must be greater than 0", err)
+                self.assertIn("--timeout must be a finite number greater than 0", err)
 
     def test_timeout_is_passed_through_or_taken_from_config(self):
         for given, expected in ((None, 300), ("0.5", 0.5), ("42", 42.0)):

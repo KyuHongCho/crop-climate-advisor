@@ -26,8 +26,8 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=None, help="harness timeout in seconds, > 0 (default: config)")
     ap.add_argument("--out", default=None, help="record path (default: a new file under the system temp dir)")
     args = ap.parse_args(argv)
-    if args.timeout is not None and not args.timeout > 0:
-        ap.error(f"--timeout must be greater than 0, not {args.timeout:g}")
+    if args.timeout is not None and not config.positive_number(args.timeout):
+        ap.error(f"--timeout must be a finite number greater than 0, not {args.timeout:g}")
 
     try:
         cfg = config.load(args.config)
