@@ -19,7 +19,8 @@ DLI_WINDOW = 80
 EXCLUDED = ("infra-error", "harness-error")
 TAGS = {"D1": "missing-source", "D2": "missing-band", "D3": "missing-condition", "D4": "no-tool-call"}
 WRONG_CLI_ARGS = "wrong-cli-args"
-# Every literal a grader or the status rules read from the redacted record; keep in step with the regexes above.
+# The words the graders read from the redacted record (D4 reaches python3 and crop_advisor.cli through
+# status.CLI_CALL); words only the status rules read are left to rule 1d. Keep in step with the regexes above.
 GRADED_WORDS = ("Bash", "skill", "python", "python3", "-m", "crop_advisor.cli", "--crop", "--lat", "--lon", "basil",
                 "ECOCROP", "Chang", "Currey", "DLI", "daily light integral", "mol", "to", "between", "and",
                 "degrees", "Celsius")

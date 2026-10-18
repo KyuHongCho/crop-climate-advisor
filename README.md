@@ -252,8 +252,8 @@ leave no transcript folders behind. The record's `status` (`ok`, `runaway`, `con
 `infra-error` or `harness-error`) is computed from its `status_inputs` alone, by `evals/status.py`.
 
 Every string value in a record is redacted before it is written, except the identity fields,
-`subject`, the skill hash and the listed skills (best effort: dict keys, the temporary folder's bare
-name and its parent folder are not rewritten): API keys (`sk-…`), bearer tokens and the OAuth token
+`subject`, the skill hash, the listed skills and the condition label (best effort: dict keys, the temporary
+folder's bare name and its parent folder are not rewritten): API keys (`sk-…`), bearer tokens and the OAuth token
 become `[REDACTED]`, and the temporary folder, your home folder, `/tmp/claude-<uid>` and your
 username are replaced by placeholders (`/TMP/trial`, `/HOME`, `/TMP/claude`, `user`). The status
 is worked out on the raw text and again on the redacted text; if they disagree the raw verdict is kept

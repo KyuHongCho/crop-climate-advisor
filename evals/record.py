@@ -121,8 +121,8 @@ def status_inputs(*, condition, exit_code=None, signal=None, timed_out=False, ha
 def build(*, identity: dict, subject: dict, condition: dict, output: dict, usage: dict,
           inputs: dict, attempt: int = 1, base=None, env=None) -> dict:
     scrub = scrubber(base, env)
-    # Exempt: the identity fields, `subject`, the skill hash and `listed_skills`, which are harness-supplied.
-    stored = scrub_tree(inputs, scrub, keep=("listed_skills",))
+    # Exempt: the identity fields, `subject`, the skill hash, `listed_skills` and the condition label, which are harness-supplied.
+    stored = scrub_tree(inputs, scrub, keep=("listed_skills", "condition"))
     raw, redacted = classify_status(inputs), classify_status(stored)
     if (raw.status, raw.rule) != (redacted.status, redacted.rule):
         # Only the verdict is recorded, never text from the inputs, so the conflict itself cannot leak.
@@ -133,7 +133,7 @@ def build(*, identity: dict, subject: dict, condition: dict, output: dict, usage
         "record_version": RECORD_VERSION,
         **identity,
         "subject": subject,
-        "condition": scrub_tree(condition, scrub, keep=("skill_sha256",)),
+        "condition": scrub_tree(condition, scrub, keep=("skill_sha256", "condition")),
         "output": scrub_tree(output, scrub),
         "usage": scrub_tree(usage, scrub),
         "status_inputs": stored,

@@ -523,6 +523,19 @@ class BuildRedactionTest(unittest.TestCase):
         self.assertEqual(rec["condition"], {"condition": "skill", "skill_sha256": user, "note": record.REDACTED})
         self.assertEqual(si["listed_skills"], ["crop-suitability", user])
 
+    def test_the_condition_label_survives_a_login_named_after_it_but_a_nested_condition_key_is_scrubbed(self):
+        for login, label in (("no", "no-skill"), ("skill", "skill")):
+            with mock.patch.dict(os.environ, {"HOME": FAKE_HOME, "USER": login, "LOGNAME": login}):
+                rec = _build(_skill_inputs(CLI, condition=label), condition={"condition": label})
+            self.assertEqual(rec["condition"]["condition"], label)
+            self.assertEqual(rec["status_inputs"]["condition"], label)
+        call = {"name": "Bash", "input": {"condition": "Bearer s3cret.value", "key": KEY}}
+        with mock.patch.dict(os.environ, {"HOME": FAKE_HOME, "USER": "no", "LOGNAME": "no"}):
+            rec = _build(_skill_inputs(CLI, condition="no-skill", permission_denials=[call]),
+                         condition={"condition": "no-skill"}, output={"answer": None, "tool_calls": [call]})
+        for leaked in ("s3cret", KEY):
+            self.assertNotIn(leaked, json.dumps(rec))
+
     def test_the_words_risk_free_and_task_timed_survive_the_whole_record(self):
         rec = _build(_skill_inputs(CLI), output={"answer": "risk-free and task-timed", "tool_calls": []})
         self.assertEqual(rec["output"]["answer"], "risk-free and task-timed")
