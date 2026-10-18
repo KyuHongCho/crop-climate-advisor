@@ -15,8 +15,8 @@ tool — built as real, working code with transparently reported status.
 > sweet-pepper, kale) — and for **basil** its optimal temperature is reported as three attributed,
 > disagreeing published claims rather than one (the other six show their FAO ECOCROP claim only) —
 > and the NASA POWER climate lookup is exposed as an **MCP server**. The **Agent Skill** is written,
-> and one eval trial at a time runs through it, but nothing *scores* how that disagreement is handled
-> yet, and the RAG layer is **not built**.
+> and one eval trial at a time runs through it, but only four deterministic checks score how that
+> disagreement is handled yet (no model judge, no repeated runs), and the RAG layer is **not built**.
 > See [What works / What's planned](#what-works--whats-planned).
 > This README describes only what actually runs; planned work is labelled as such.
 
@@ -30,7 +30,7 @@ tool — built as real, working code with transparently reported status.
 | ✅ | CLI + offline unit tests | **working** |
 | ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
 | ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — for basil only (journal claims are attached to ECOCROP id 1547; the other crops show the ECOCROP claim alone) the CLI prints all three and derives from their intersection that no single window satisfies them all; for the queried location it also reports where that location falls relative to each claim, flags it when the sources point in opposite directions there, and prints a conservative read that never calls a site optimal unless every source does |
-| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | **partly built** — one trial per command, with or without the Skill, writes a record with a status (see [The Agent Skill](#the-agent-skill)); no grading, statistics or repeated runs yet |
+| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | **partly built** — one trial per command, with or without the Skill, writes a record with a status (see [The Agent Skill](#the-agent-skill)), and `python -m evals.score` grades that record with four deterministic checks; no model judge, statistics or repeated runs yet |
 | ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
 | ✅ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | **written** — `.agents/skills/crop-suitability/`; Claude Code invokes it and runs the CLI, but whether it improves the answers is not yet measured |
 
@@ -245,11 +245,30 @@ from its built-in plugins are denied with `--disallowedTools "Skill(skill:<name>
 `crop-suitability` is the only skill the subject can run. If Claude Code lists any other skill,
 the trial records `harness-error` naming it: add the skill to `DENIED_SKILLS` in `evals/status.py`
 (the adapter's deny rules follow from it), update the tests that pin the 2.1.301 listing, and re-run.
-If the `skill` condition's subject is not offered `crop-suitability` at all, the trial also records
-`harness-error`. Sessions are not saved (`--no-session-persistence`) and auto memory is off
-(`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`), so trials leave no transcript folders behind. The record's
-`status` (`ok`, `runaway`, `contract-violation`, `infra-error` or `harness-error`) is computed from
-its `status_inputs` alone, by `evals/status.py`.
+If the `skill` condition's subject is not offered `crop-suitability` at all, or the `no-skill`
+condition's subject is offered it, the trial also records `harness-error`. Sessions are not saved
+(`--no-session-persistence`) and auto memory is off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`), so trials
+leave no transcript folders behind. The record's `status` (`ok`, `runaway`, `contract-violation`,
+`infra-error` or `harness-error`) is computed from its `status_inputs` alone, by `evals/status.py`.
+
+Every string value in a record is redacted before it is written, except the identity fields,
+`subject`, the skill hash, the listed skills and the condition label (best effort: dict keys, the temporary
+folder's bare name and its parent folder are not rewritten): API keys (`sk-…`), bearer tokens and the OAuth token
+become `[REDACTED]`, and the temporary folder, your home folder, `/tmp/claude-<uid>` and your
+username are replaced by placeholders (`/TMP/trial`, `/HOME`, `/TMP/claude`, `user`). The status
+is worked out on the raw text and again on the redacted text; if they disagree the raw verdict is kept
+as rule `1d` and tagged `redaction-conflict`.
+
+```bash
+python -m evals.score path/to/record.json
+```
+
+scores a record with four deterministic checks, each printed with the text that satisfied it:
+**D1** all three basil sources named, **D2** all three optimal bands stated, **D3** both light-integral
+(DLI) conditions stated, **D4** (`skill` condition only) the CLI run with `--crop basil` and the case's
+coordinates. It prints the status and the triage tags of every failure, such as `missing-band`. A
+`runaway` fails every check that applies (D4 does not apply to the `no-skill` condition) and is
+tagged `runaway`; an `infra-error` or `harness-error` trial is not graded.
 
 **Your own instruction files stop every trial.** `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` keeps Claude Code
 from loading `CLAUDE.md` files into the subject, and a guard detects what might still get through: the

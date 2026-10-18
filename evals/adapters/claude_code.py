@@ -216,7 +216,7 @@ def read_paths(tool_calls, workspace):
 
 
 def to_record(*, case, eval_set, trial_id, model, condition, cli_version_, run_result, parsed,
-              harness_exception=None, skill_sha=None, env=None, workspace=None) -> dict:
+              harness_exception=None, skill_sha=None, env=None, workspace=None, base=None) -> dict:
     run_result = run_result or {}
     event, init = parsed.get("result_event"), parsed.get("init")
     models = canonical_models(event)
@@ -226,7 +226,7 @@ def to_record(*, case, eval_set, trial_id, model, condition, cli_version_, run_r
         signal=run_result.get("signal"),
         timed_out=bool(run_result.get("timed_out")),
         harness_exception=harness_exception,
-        stderr_tail=record.stderr_tail(run_result.get("stderr", ""), env),
+        stderr_tail=record.stderr_tail(run_result.get("stderr", ""), env, base),
         stream_parsed=parsed.get("stream_parsed", False),
         result_event=event,
         cli_tool_results=parsed.get("cli_tool_results", ()),
@@ -248,7 +248,7 @@ def to_record(*, case, eval_set, trial_id, model, condition, cli_version_, run_r
         usage={"tokens": (event or {}).get("usage"), "cost_usd": (event or {}).get("total_cost_usd"),
                "latency_ms": run_result.get("latency_ms"), "duration_ms": (event or {}).get("duration_ms"),
                "turns": (event or {}).get("num_turns")},
-        inputs=inputs,
+        inputs=inputs, base=base, env=env,
     )
 
 
@@ -269,7 +269,7 @@ def run_trial(*, case, eval_set, model, condition, budget_usd, timeout, trial_id
         except Exception as e:  # noqa: BLE001 - any harness fault becomes rule 1, never a lost trial
             failure = f"{type(e).__name__}: {e}"
         identity = dict(case=case, eval_set=eval_set, trial_id=trial_id, model=model, condition=condition,
-                        cli_version_=version, skill_sha=skill_sha, env=env)
+                        cli_version_=version, skill_sha=skill_sha, env=env, base=base)
         try:
             return to_record(**identity, run_result=run_result, parsed=parsed, harness_exception=failure,
                              workspace=workspace)
