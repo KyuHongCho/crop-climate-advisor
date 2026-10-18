@@ -245,6 +245,22 @@ class D4CliCallTest(unittest.TestCase):
         self.assertTrue(result["passed"])
 
 
+class ReplayMistypedCoordinatesTest(unittest.TestCase):
+    def test_replay_mistyped_coordinates_are_graded_and_d4_fails_with_wrong_cli_args(self):
+        # Synthesised pairing: the stored Bangkok stream under the Lagos case, so its CLI call is the subject's typo.
+        lagos = cases.get("lagos")[1]
+        lines = (SAMPLES_DIR / "replay_missing_model_answers.jsonl").read_text(encoding="utf-8").splitlines(keepends=True)
+        rec = claude_code.to_record(case=lagos, eval_set={"version": "1"}, trial_id="t", model="claude-haiku-5-5",
+                                    condition="skill", cli_version_="2.1.301", env={},
+                                    run_result={"stderr": "", "exit_code": 0, "signal": None, "timed_out": False},
+                                    parsed=claude_code.parse([(i, line) for i, line in enumerate(lines)]))
+        result = graders.grade(rec, lagos)
+        d4 = result["criteria"][3]
+        self.assertEqual((result["status"], result["status_rule"], result["passed"]), ("ok", "11", False))
+        self.assertEqual((d4.criterion, d4.verdict, d4.tags), ("D4", "fail", ("wrong-cli-args",)))
+        self.assertNotIn("no-tool-call", result["tags"])
+
+
 class TrialVerdictTest(unittest.TestCase):
     def test_a_faithful_skill_answer_passes_with_no_tags(self):
         result = grade_answer(GOOD)

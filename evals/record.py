@@ -98,7 +98,7 @@ def skill_sha256(skill_dir) -> str:
 def status_inputs(*, condition, exit_code=None, signal=None, timed_out=False, harness_exception=None,
                   stderr_tail="", stream_parsed=False, result_event=None, cli_tool_results=(),
                   permission_denials=(), bash_commands=(), read_paths=(), skill_calls=(),
-                  listed_skills=None, redaction_conflict=None) -> dict:
+                  listed_skills=None, redaction_conflict=None, expected_replay_file=None) -> dict:
     return {
         "exit_code": exit_code,
         "signal": signal,
@@ -115,6 +115,7 @@ def status_inputs(*, condition, exit_code=None, signal=None, timed_out=False, ha
         "listed_skills": None if listed_skills is None else list(listed_skills),
         "condition": condition,
         "redaction_conflict": redaction_conflict,
+        "expected_replay_file": expected_replay_file,
     }
 
 

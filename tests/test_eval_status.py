@@ -1,14 +1,16 @@
 """classify_status: the ordered rules, the pinned overlaps, and every stored stream-json sample."""
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from crop_advisor import climate
 from evals import record
 from evals.adapters import claude_code
 from evals.record import status_inputs
-from evals.status import classify_status
+from evals.status import classify_status, replay_missing_files
 
 
 def setUpModule():
@@ -366,6 +368,68 @@ class RuleOrderTest(unittest.TestCase):
     def test_a_harness_exception_wins_over_everything(self):
         si = _si(harness_exception="RuntimeError: x", timed_out=True)
         self.assertEqual(classify_status(si)[:2], ("harness-error", "1"))
+
+
+BANGKOK_FILE = "13.75_100.5.json"
+LAGOS_FILE = "6.52_3.38.json"
+
+
+def _replay_marker(name, directory="/TMP/trial/replay"):
+    # The CLI's own text for a missing recording, as the stored sample carries it.
+    return (f"Exit code 2\ncli.py: error: CROP_ADVISOR_REPLAY_MISSING: no recorded NASA POWER response at "
+            f"{directory}/{name} (CROP_ADVISOR_CLIMATE_REPLAY={directory})")
+
+
+class ReplayMissingTest(unittest.TestCase):
+    def _status(self, results, expected=LAGOS_FILE):
+        return classify_status(_si(condition="skill", cli_tool_results=results, expected_replay_file=expected))[:2]
+
+    def test_replay_other_file_is_graded(self):
+        wrong = _replay_marker(BANGKOK_FILE)
+        self.assertEqual(self._status([wrong]), ("ok", "11"))
+        self.assertEqual(self._status([wrong, "Crop-Climate Advisor\nbasil in Lagos"]), ("ok", "11"))
+
+    def test_replay_own_file_missing_is_a_harness_error(self):
+        self.assertEqual(self._status([_replay_marker(LAGOS_FILE)]), ("harness-error", "5"))
+
+    def test_replay_marker_without_a_readable_name_is_a_harness_error(self):
+        for text in ("CROP_ADVISOR_REPLAY_MISSING", "CROP_ADVISOR_REPLAY_MISSING: the recording is gone",
+                     "CROP_ADVISOR_REPLAY_MISSING: no recorded NASA POWER response at /TMP/trial/replay/",
+                     "CROP_ADVISOR_REPLAY_MISSING: no recorded NASA POWER response at / (CROP_ADVISOR_CLIMATE_REPLAY=/)"):
+            with self.subTest(text=text):
+                self.assertEqual(self._status([text]), ("harness-error", "5"))
+
+    def test_replay_marker_with_the_field_absent_or_null_fires_on_any_file(self):
+        wrong = _replay_marker(BANGKOK_FILE)
+        self.assertEqual(self._status([wrong], expected=None), ("harness-error", "5"))
+        absent = _si(condition="skill", cli_tool_results=[wrong])
+        del absent["expected_replay_file"]
+        self.assertEqual(classify_status(absent)[:2], ("harness-error", "5"))
+
+    def test_replay_two_markers_fire_only_when_one_names_the_own_file(self):
+        wrong, own = _replay_marker(BANGKOK_FILE), _replay_marker(LAGOS_FILE)
+        self.assertEqual(self._status([wrong, own]), ("harness-error", "5"))
+        self.assertEqual(self._status([f"{wrong}\n{own}"]), ("harness-error", "5"))
+        self.assertEqual(self._status([wrong, _replay_marker("1.0_2.0.json")]), ("ok", "11"))
+        self.assertEqual(self._status([f"{wrong}\n{_replay_marker('1.0_2.0.json')}"]), ("ok", "11"))
+
+    def test_replay_missing_files_reads_the_last_path_component(self):
+        for directory in ("/tmp/crop-eval-abc/replay", "/TMP/trial/replay", "/HOME/work/replay", "/a b (c)/replay"):
+            with self.subTest(directory=directory):
+                self.assertEqual(replay_missing_files(_replay_marker(BANGKOK_FILE, directory)), [BANGKOK_FILE])
+        self.assertEqual(replay_missing_files("no marker here"), [])
+        self.assertEqual(replay_missing_files(_replay_marker(BANGKOK_FILE) + "\n" + _replay_marker(LAGOS_FILE)),
+                         [BANGKOK_FILE, LAGOS_FILE])
+        self.assertEqual(replay_missing_files("CROP_ADVISOR_REPLAY_MISSING: odd\n" + _replay_marker(LAGOS_FILE)),
+                         [None, LAGOS_FILE])
+
+    def test_replay_missing_files_parses_the_real_cli_message(self):
+        with tempfile.TemporaryDirectory() as empty, mock.patch.dict(os.environ, {climate.REPLAY_ENV: empty}):
+            with self.assertRaises(FileNotFoundError) as caught:
+                climate.fetch_climate(13.75, 100.5)
+        self.assertEqual(replay_missing_files(str(caught.exception)),
+                         [climate.replay_path(empty, 13.75, 100.5).name])
+        self.assertEqual(replay_missing_files(str(caught.exception)), [BANGKOK_FILE])
 
 
 if __name__ == "__main__":

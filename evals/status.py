@@ -3,7 +3,7 @@ import posixpath
 import re
 from typing import NamedTuple
 
-from crop_advisor.climate import REPLAY_MISSING
+from crop_advisor.climate import REPLAY_ENV, REPLAY_MISSING
 
 RUNAWAY_SUBTYPES = ("error_max_budget_usd", "error_max_turns")
 _INFRA_HTTP = {408, 429}
@@ -11,6 +11,8 @@ _STDERR_API_STATUS = re.compile(r"API Error:?\s*(\d{3})")
 _STDERR_API_ERROR = re.compile(r"API Error|rate_limit_error|overloaded_error|api_error", re.IGNORECASE)
 _RATE_OR_OVERLOAD = re.compile(r"rate[ _-]?limit|overloaded", re.IGNORECASE)
 _NETWORK_FAILURE = re.compile(r"urllib\.error\.URLError|URLError|socket\.timeout|TimeoutError|timed out")
+_REPLAY_MISSING_PATH = re.compile(
+    re.escape(": no recorded NASA POWER response at ") + r"(.+?) \(" + re.escape(f"{REPLAY_ENV}="))
 CLI_CALL = re.compile(r"(?:^|[\s;&|(])python3?\s+-m\s+crop_advisor\.cli\b")
 # Only a lone CLI invocation is on contract; a chained, piped or substituted command can do anything else too.
 _CLI_ONLY = re.compile(r"[ \t]*python3?[ \t]+-m[ \t]+crop_advisor\.cli(?:[ \t]+(?:(?![;&|<>`\n\r]|\$\().)*)?[ \t]*")
@@ -45,6 +47,15 @@ def _api_error(si: dict):
         http = int(m.group(1)) if m else None
     text = " ".join(str(x) for x in (event.get("result"), event.get("errors"), stderr) if x)
     return http, text, subtype
+
+
+def replay_missing_files(text: str) -> list:
+    """The file name each REPLAY_MISSING marker in `text` names, or None for a marker whose name cannot be read."""
+    names = []
+    for after in text.split(REPLAY_MISSING)[1:]:
+        m = _REPLAY_MISSING_PATH.match(after)
+        names.append((posixpath.basename(m.group(1)) or None) if m else None)
+    return names
 
 
 def non_cli_bash(commands) -> list:
@@ -95,7 +106,10 @@ def classify_status(si: dict) -> Status:
         if http is not None and 400 <= http <= 499:
             return Status("harness-error", "4b", detail, ("harness-error",))
         return Status("harness-error", "4c", detail, ("harness-error",))
-    if any(REPLAY_MISSING in r for r in cli_results):
+    expected = si.get("expected_replay_file")
+    # A marker naming another file is the subject's own mistyped coordinates; an unreadable one fails safe to a fault.
+    if any(expected is None or name is None or name == expected
+           for r in cli_results for name in replay_missing_files(r)):
         return Status("harness-error", "5", f"the CLI reported {REPLAY_MISSING}", ("harness-error",))
     if any(_NETWORK_FAILURE.search(r) for r in cli_results):
         return Status("infra-error", "6", "the CLI hit a NASA POWER network failure", ("infra-error",))

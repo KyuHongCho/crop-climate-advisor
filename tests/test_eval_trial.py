@@ -230,7 +230,8 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(set(si), {"exit_code", "signal", "timed_out", "harness_exception", "stderr_tail",
                                    "stream_parsed", "result_event", "cli_tool_results", "permission_denials",
                                    "bash_commands", "read_paths", "skill_calls", "listed_skills", "condition",
-                                   "redaction_conflict"})
+                                   "redaction_conflict", "expected_replay_file"})
+        self.assertIsNone(si["expected_replay_file"])
         self.assertEqual(si["skill_calls"], ["crop-suitability"])
         self.assertEqual(si["listed_skills"], parsed["init"]["skills"])
         self.assertEqual(si["bash_commands"], [parsed["tool_calls"][1]["input"]["command"]])
@@ -683,6 +684,67 @@ class PlantedValuesTest(unittest.TestCase):
         self.assertIn("record build failed: RuntimeError: boom in /TMP/trial/workspace",
                       rec["status_inputs"]["harness_exception"])
         self.assertNotIn(calls[0]["base"], json.dumps(rec))
+
+
+# Synthesised pairing: the stored stream's marker names the Bangkok recording, so under another case it is the subject's own typo.
+def _replay_record(site, login="testuser", stream="replay_missing_model_answers.jsonl"):
+    case = {**cases.get(site)[1]}
+    parsed = claude_code.parse(_sample_lines(stream))
+    with mock.patch.dict(os.environ, {"USER": login, "LOGNAME": login, "USERNAME": login}):
+        return claude_code.to_record(case=case, eval_set={"version": "1", "sha256": "h"}, trial_id="t",
+                                     model="claude-haiku-5-5", condition="skill", cli_version_="2.1.301",
+                                     run_result={"stderr": "", "exit_code": 0, "signal": None, "timed_out": False,
+                                                 "latency_ms": 5}, parsed=parsed, skill_sha="abc", env={})
+
+
+class ReplayAttributionTest(unittest.TestCase):
+    def test_replay_file_name_is_stored_from_the_case_coordinates(self):
+        self.assertEqual(_replay_record("bangkok")["status_inputs"]["expected_replay_file"], "13.75_100.5.json")
+        self.assertEqual(_replay_record("lagos")["status_inputs"]["expected_replay_file"], "6.52_3.38.json")
+        self.assertEqual(_replay_record("london")["status_inputs"]["expected_replay_file"], "51.5_-0.13.json")
+        parsed = claude_code.parse(_sample_lines("skill_ok.jsonl"))
+        for case in ({"id": "x", "prompt": PROMPT}, {"id": "x", "prompt": PROMPT, "lat": None, "lon": None}):
+            rec = claude_code.to_record(case=case, eval_set={"version": "1"}, trial_id="t", model="m",
+                                        condition="skill", cli_version_="1", run_result={"exit_code": 0},
+                                        parsed=parsed, env={})
+            self.assertIsNone(rec["status_inputs"]["expected_replay_file"])
+
+    def test_replay_own_file_missing_is_a_harness_error(self):
+        rec = _replay_record("bangkok")
+        self.assertEqual((rec["status"], rec["status_rule"]), ("harness-error", "5"))
+
+    def test_replay_other_file_is_graded_not_excluded(self):
+        rec = _replay_record("lagos")
+        self.assertEqual((rec["status"], rec["status_rule"], rec["tags"]), ("ok", "11", []))
+        self.assertIsNone(rec["status_inputs"]["redaction_conflict"])
+
+    def test_replay_login_json_rewrites_both_sides_and_keeps_the_verdict(self):
+        for site, file, expected in (("bangkok", "13.75_100.5.user", ("harness-error", "5")),
+                                     ("lagos", "6.52_3.38.user", ("ok", "11"))):
+            with self.subTest(site=site):
+                rec = _replay_record(site, login="json")
+                si = rec["status_inputs"]
+                self.assertEqual(si["expected_replay_file"], file)
+                self.assertIn(".user (", si["cli_tool_results"][0])
+                self.assertEqual((rec["status"], rec["status_rule"]), expected)
+                self.assertIsNone(si["redaction_conflict"])
+
+    def test_replay_login_that_is_marker_text_keeps_the_raw_verdict_as_a_conflict(self):
+        for login in ("no", "at"):
+            with self.subTest(login=login):
+                rec = _replay_record("lagos", login=login)
+                self.assertEqual((rec["status"], rec["status_rule"]), ("ok", "1d"))
+                self.assertIn("redaction-conflict", rec["tags"])
+                self.assertEqual(rec["status_inputs"]["redaction_conflict"],
+                                 {"status": "ok", "rule": "11", "redacted_rule": "5", "tags": []})
+                own = _replay_record("bangkok", login=login)
+                self.assertEqual((own["status"], own["status_rule"]), ("harness-error", "5"))
+                self.assertIsNone(own["status_inputs"]["redaction_conflict"])
+
+    def test_replay_a_record_stored_before_the_field_existed_still_classifies_as_before(self):
+        rec = json.loads(json.dumps(_replay_record("lagos")))
+        del rec["status_inputs"]["expected_replay_file"]
+        self.assertEqual(status.classify_status(rec["status_inputs"])[:2], ("harness-error", "5"))
 
 
 class SkillHashTest(unittest.TestCase):
