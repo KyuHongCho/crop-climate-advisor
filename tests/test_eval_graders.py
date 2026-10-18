@@ -12,7 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from evals import cases, graders, score
+from crop_advisor.cli import build_parser
+from evals import cases, graders, record, score
 from evals.adapters import claude_code
 
 
@@ -239,6 +240,51 @@ class D4CliCallTest(unittest.TestCase):
         record["output"]["tool_calls"] = [{"name": "Bash", "input": {"command": 5}}, {"name": "Bash", "input": None}]
         self.assertEqual(graders.grade(record, BANGKOK)["criteria"][3].verdict, "fail")
 
+    def test_arguments_are_read_as_the_cli_reads_them(self):
+        c = "python -m crop_advisor.cli --crop basil "
+        wrong = (c + "--lat 13.75 --lon 100.5 --lat 13.7563",
+                 c + "--lat 13.7500000001 --lon 100.5",
+                 c + "--place 'x --lat 13.75 --lon 100.5' --lat 99 --lon 99",
+                 c + "--lat 13.75 --lon 100.5 --lat 6.52 --lon 3.38",
+                 c + "--lat 99 --lon 99 --place 'x --lat 13.75 --lon 100.5'",
+                 c + "--lat 6.52 --lon 3.38 --place 'x --lat 13.75 --lon 100.5'",
+                 c + "--lat 13.75 --lon 100.5 --place 'Bang",
+                 c + "--lat 13.75 --lon 99",
+                 c + "--lat=13.75 --lon=99")
+        for command in wrong:
+            with self.subTest(command=command):
+                g = grade_answer(GOOD, commands=[command])["criteria"][3]
+                self.assertEqual((g.verdict, g.tags), ("fail", ("wrong-cli-args",)))
+        right = (c + "--lat 13.7563 --lon 100.5 --lat 13.75",
+                 c + "--la 13.75 --lo 100.5",
+                 c + "--lat 13.75 --lon 100.5  # note")
+        for command in right:
+            with self.subTest(command=command):
+                g = grade_answer(GOOD, commands=[command])["criteria"][3]
+                self.assertEqual((g.verdict, g.tags), ("pass", ()))
+
+    def test_text_after_the_command_segment_is_not_parsed(self):
+        c = "python -m crop_advisor.cli --crop basil "
+        wrong = c + "--lat 99 --lon 99 ; echo --lat 13.75 --lon 100.5"
+        g = grade_answer(GOOD, commands=[wrong])["criteria"][3]
+        self.assertEqual((g.verdict, g.tags), ("fail", ("wrong-cli-args",)))
+        for delimiter in ("&&", "|", "<", ">", "\n"):
+            with self.subTest(delimiter=delimiter):
+                right = c + f"--lat 13.75 --lon 100.5 {delimiter} echo --lat 99 --lon 99"
+                self.assertEqual(grade_answer(GOOD, commands=[right])["criteria"][3].verdict, "pass")
+
+    def test_help_and_rejected_arguments_print_nothing_and_fail_with_the_wrong_cli_args_tag(self):
+        for tail in ("--help", "-h", "--crop basil", "--crop basil --lat x --lon 100.5"):
+            with self.subTest(tail=tail), contextlib.redirect_stdout(io.StringIO()) as out, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                g = grade_answer(GOOD, commands=[f"python -m crop_advisor.cli {tail}"])["criteria"][3]
+            self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+            self.assertEqual((g.verdict, g.tags), ("fail", ("wrong-cli-args",)))
+
+    def test_the_cli_parser_defines_the_flags_the_grader_reads(self):
+        args = build_parser().parse_args(["--crop", "c", "--lat", "1", "--lon", "2", "--place", "p"])
+        self.assertEqual((args.crop, args.lat, args.lon, args.place), ("c", 1.0, 2.0, "p"))
+
     def test_it_is_not_applicable_to_the_no_skill_condition(self):
         result = grade_answer(GOOD, condition="no-skill", commands=())
         self.assertEqual(verdicts(result)["D4"], "n/a")
@@ -451,6 +497,14 @@ class LoginGuardTest(unittest.TestCase):
                      "not scrubbed where it appears as a bare word"):
             self.assertIn(part, msg)
         self.assertNotRegex(msg, r"(?i)\bgrep\b|\bsearch (the|your) record")
+
+    def test_a_login_of_place_is_refused_because_the_parser_rejects_the_rewritten_flag(self):
+        with _login("place"):
+            self.assertIn("'--place'", graders.login_error())
+            rewritten = record.rewriter()(CLI)
+        self.assertIn('--user "Bangkok"', rewritten)
+        g = graders.d4_cli_call(make_record(GOOD, commands=[rewritten]), BANGKOK)
+        self.assertEqual((g.verdict, g.tags), ("fail", ("wrong-cli-args",)))
 
     def test_other_logins_and_a_failing_getuser_pass(self):
         for login in ("testuser", "kyuhong.cho77", "eval", "runner", "user", "TMP", "claude", "chang", "75"):

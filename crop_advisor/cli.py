@@ -93,12 +93,17 @@ def _format(a: Assessment, crop: dict, climate) -> str:
     return "\n".join(lines)
 
 
-def main(argv=None) -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Assess a crop's suitability for a location.")
     ap.add_argument("--crop", required=True, help=f"crop slug (available: {', '.join(available_crops()) or 'none yet'})")
     ap.add_argument("--lat", type=float, required=True, help="latitude, e.g. 51.5")
     ap.add_argument("--lon", type=float, required=True, help="longitude, e.g. -0.13")
     ap.add_argument("--place", default=None, help="optional place label for the report")
+    return ap
+
+
+def main(argv=None) -> None:
+    ap = build_parser()
     args = ap.parse_args(argv)
 
     crop = load_crop(args.crop)
