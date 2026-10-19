@@ -251,6 +251,15 @@ class CellTest(unittest.TestCase):
         self.assertEqual(cell["cost"], {"sum": 0.0, "mean": None, "priced": 0, "unpriced": 1})
         self.assertEqual(cell["latency"]["n"], 0)
 
+    def test_a_float_latency_is_ignored_but_a_float_cost_is_priced(self):
+        record = make("skill_ok", rep=1, serial=1)
+        record["usage"]["cost_usd"], record["usage"]["latency_ms"] = 0.25, 4329.5
+        built = build([record])
+        cell = cell_of(built)
+        self.assertEqual(cell["latency"]["n"], 0)
+        self.assertEqual((cell["cost"]["priced"], cell["cost"]["unpriced"]), (1, 0))
+        self.assertIn("latency     n=0", report.format_report(built))
+
     def test_wilson_bounds_never_print_a_negative_zero_or_exceed_one(self):
         for n in (7, 9, 14, 17, 18):
             with self.subTest(n=n):
@@ -457,6 +466,19 @@ class CommandTest(unittest.TestCase):
                 code, out, err = run_main(write_jsonl(self.dir, [bad]))
                 self.assertEqual((code, out), (2, ""))
                 self.assertTrue(err)
+
+    def test_an_attempt_2_needs_an_infra_error_attempt_1(self):
+        for label, first in (("no attempt 1", None), ("ok first", make("skill_ok", rep=1, serial=1)),
+                             ("harness-error first", make("replay_missing_model_answers", rep=1, serial=1))):
+            with self.subTest(label):
+                records = [make("skill_ok", rep=1, attempt=2, serial=2)]
+                code, out, err = run_main(write_jsonl(self.dir, [first, *records] if first else records))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("attempt 2 without an infra-error attempt 1", err)
+
+    def test_an_attempt_2_listed_before_its_infra_error_attempt_1_is_accepted(self):
+        records = [make("skill_ok", rep=1, attempt=2, serial=2), make("nasa_network_failure", rep=1, serial=1)]
+        self.assertEqual(run_main(write_jsonl(self.dir, records))[0], 0)
 
     def test_an_unknown_case_exits_2_and_names_it(self):
         code, out, err = run_main(write_jsonl(self.dir, [{**make("skill_ok", rep=1, serial=1), "case_id": "atlantis"}]))

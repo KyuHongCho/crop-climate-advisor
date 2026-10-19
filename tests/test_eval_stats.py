@@ -104,6 +104,12 @@ class BootstrapTest(unittest.TestCase):
                  ([1, 1, 1, 0, 1, 0, 1], [1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0])]
         self.assertEqual(stats.bootstrap_ci(pairs, seed=1, resamples=999), (0.1463, 0.6241))
 
+    def test_the_high_endpoint_is_pinned_where_975B_is_whole(self):
+        pairs = [([1, 1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1], [0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1]),
+                 ([1, 0, 1, 1, 0, 1, 1, 1, 0], [0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0]),
+                 ([1, 1, 1, 0, 1, 0, 1], [1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0])]
+        self.assertEqual(stats.bootstrap_ci(pairs, seed=1, resamples=1000), (0.1476, 0.6225))
+
     def test_same_seed_same_interval_other_seed_another(self):
         a = stats.bootstrap_ci(MIXED, seed=1, resamples=1000)
         self.assertEqual(a, stats.bootstrap_ci(MIXED, seed=1, resamples=1000))

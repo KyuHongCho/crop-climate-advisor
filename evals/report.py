@@ -1,10 +1,6 @@
-"""The per-cell report over a file of trial records. Reads only; it makes no model call and writes nothing.
+"""The per-cell report over a file of trial records; reads only, makes no model call, writes nothing.
 
-    python -m evals.report <trials.jsonl | run dir> [--cases evals/cases.json]
-
-A cell is case x model x condition. A slot is (case, model, condition, rep) and has one attempt, or two when the first
-ended `infra-error`; the statistics read each slot's last attempt. The pass rate is graded by the deterministic
-graders only.
+A slot (case, model, condition, rep) has one attempt, or two when the first ended `infra-error`; the last is graded.
 """
 import argparse
 import json
@@ -96,6 +92,9 @@ def _slots(records):
         if r["attempt"] in attempts:
             raise ReportError(f"record {r.get('trial_id')}: slot {key} has two attempt {r['attempt']} records")
         attempts[r["attempt"]] = r
+    for key, attempts in slots.items():
+        if 2 in attempts and _get(attempts.get(1), "status") != "infra-error":
+            raise ReportError(f"slot {key}: attempt 2 without an infra-error attempt 1")
     return slots
 
 
@@ -117,7 +116,7 @@ def _cell(case_id, model, condition, slots, case) -> dict:
     reruns = [r for attempt, r in finals if attempt == 2]
     attempts = [r for _, a in ordered for r in a.values()]
     costs = [r["usage"]["cost_usd"] for r in attempts if _number(_get(r, "usage", "cost_usd"))]
-    latencies = [r["usage"]["latency_ms"] for r, _ in counted if _number(_get(r, "usage", "latency_ms"))]
+    latencies = [r["usage"]["latency_ms"] for r, _ in counted if _is_int(_get(r, "usage", "latency_ms"))]
     d = len(counted)
     passes = [1 if g["passed"] is True else 0 for _, g in counted]
     c = sum(passes)

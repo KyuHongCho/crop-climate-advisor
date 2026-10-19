@@ -73,11 +73,9 @@ def _draw(rng, vector):
 
 
 def bootstrap_ci(pairs, seed: int = DEFAULT_SEED, resamples: int = DEFAULT_RESAMPLES):
-    """95% interval of the mean per-case delta; None when no case has both sides.
+    """95% interval of the mean per-case delta of `pairs` ((skill, no-skill) 0/1 lists per case); None if no case has both.
 
-    `pairs` holds one (skill passes, no-skill passes) pair of 0/1 lists per case. Each resample draws every case's two
-    sides independently, with replacement, skill first. Only `Random.random()` is used, because its stream is the one
-    the Python docs promise stays stable for a seed across versions.
+    Only `Random.random()` is used: the Python docs promise its stream stays stable for a seed across versions.
     """
     use = _usable(pairs)
     if not use:
