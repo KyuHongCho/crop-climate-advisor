@@ -5,7 +5,6 @@ import io
 import json
 import os
 import re
-import stat
 import sys
 import tempfile
 import unittest
@@ -15,6 +14,9 @@ from unittest import mock
 from crop_advisor.climate import REPLAY_ENV
 from evals import cases, graders, record, status, trial
 from evals.adapters import claude_code
+from tests.fake_claude import SAMPLES_DIR
+from tests.fake_claude import fake_claude as _fake_claude
+from tests.fake_claude import sample_lines as _sample_lines
 
 
 def setUpModule():
@@ -24,36 +26,10 @@ def setUpModule():
     unittest.addModuleCleanup(patcher.stop)
 
 
-SAMPLES_DIR = Path(__file__).resolve().parent / "fixtures" / "claude_code"
 PROMPT = "Is basil suited to Bangkok (latitude 13.75, longitude 100.5)?"
 COMMON = ["claude", "-p", PROMPT, "--model", "claude-sonnet-5-5",
           "--setting-sources", "project", "--strict-mcp-config", "--permission-mode", "default",
           "--max-budget-usd", "0.50", "--no-session-persistence", "--output-format", "stream-json", "--verbose"]
-
-
-def _sample_lines(name):
-    return [(i * 10, line) for i, line in
-            enumerate((SAMPLES_DIR / name).read_text(encoding="utf-8").splitlines(keepends=True))]
-
-
-def _fake_claude(directory, stream=None, exit_code=0, sleep=0, env_dump=None, emit=None, script=None):
-    """A stand-in `claude`: answers --version, otherwise prints a stored stream."""
-    path = Path(directory) / "claude"
-    body = ["#!/bin/sh", 'if [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi']
-    if env_dump:
-        body.append(f'env > "{env_dump}"; pwd >> "{env_dump}"; ls -a >> "{env_dump}"')
-    if sleep:
-        body.append(f"sleep {sleep}")
-    if stream:
-        body.append(f'cat "{SAMPLES_DIR / stream}"')
-    if emit:
-        body.append(f'"{sys.executable}" -c \'{emit}\'')
-    if script:
-        body.append(f'"{sys.executable}" "{script}"')
-    body.append(f"exit {exit_code}")
-    path.write_text("\n".join(body) + "\n")
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return str(path)
 
 
 class ArgvTest(unittest.TestCase):
