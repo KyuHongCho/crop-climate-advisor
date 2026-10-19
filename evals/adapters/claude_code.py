@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from crop_advisor.climate import REPLAY_ENV
+from crop_advisor.climate import REPLAY_ENV, replay_path
 
 from .. import record
 from ..status import CLI_CALL, DENIED_SKILLS, SKILL_NAME
@@ -220,6 +220,7 @@ def to_record(*, case, eval_set, trial_id, model, condition, cli_version_, run_r
     run_result = run_result or {}
     event, init = parsed.get("result_event"), parsed.get("init")
     models = canonical_models(event)
+    has_site = case.get("lat") is not None and case.get("lon") is not None
     inputs = record.status_inputs(
         condition=condition,
         exit_code=run_result.get("exit_code"),
@@ -235,6 +236,7 @@ def to_record(*, case, eval_set, trial_id, model, condition, cli_version_, run_r
         skill_calls=[_skill(c) for c in parsed.get("tool_calls", []) if c.get("name") == "Skill"],
         read_paths=read_paths(parsed.get("tool_calls", []), workspace),
         listed_skills=list(init.get("skills") or []) if init else None,
+        expected_replay_file=replay_path(".", case["lat"], case["lon"]).name if has_site else None,
     )
     return record.build(
         identity={"case_id": case["id"], "eval_set_version": eval_set.get("version"),

@@ -1,8 +1,12 @@
 """Deterministic graders D1-D4 for basil's three disagreeing temperature claims, each returning evidence spans."""
+import contextlib
+import io
 import re
+import shlex
 from typing import NamedTuple
 
 from crop_advisor import claims, ecocrop
+from crop_advisor.cli import build_parser
 
 from . import record
 from .status import CLI_CALL
@@ -21,8 +25,8 @@ TAGS = {"D1": "missing-source", "D2": "missing-band", "D3": "missing-condition",
 WRONG_CLI_ARGS = "wrong-cli-args"
 # The words the graders read from the redacted record (D4 reaches python3 and crop_advisor.cli through
 # status.CLI_CALL); words only the status rules read are left to rule 1d. Keep in step with the regexes above.
-GRADED_WORDS = ("Bash", "skill", "python", "python3", "-m", "crop_advisor.cli", "--crop", "--lat", "--lon", "basil",
-                "ECOCROP", "Chang", "Currey", "DLI", "daily light integral", "mol", "to", "between", "and",
+GRADED_WORDS = ("Bash", "skill", "python", "python3", "-m", "crop_advisor.cli", "--crop", "--lat", "--lon", "--place",
+                "basil", "ECOCROP", "Chang", "Currey", "DLI", "daily light integral", "mol", "to", "between", "and",
                 "degrees", "Celsius")
 
 
@@ -111,16 +115,15 @@ def d3_conditions(answer: str, cs) -> Grade:
     return _grade("D3", hits, missing, "condition not stated", "both DLI conditions stated")
 
 
-def _arg(command: str, flag: str):
-    m = re.search(rf"--{flag}(?:\s+|=)[\"']?([^\s\"']+)", command)
-    return m.group(1) if m else None
-
-
-def _same_number(text, expected) -> bool:
+def _cli_args(command: str):
+    """The command's CLI arguments as the real CLI's own parser reads them, or None if it would reject them."""
+    m = CLI_CALL.search(command)
+    tail = re.split(r"[;&|<>\n]", command[m.end():], maxsplit=1)[0]
     try:
-        return abs(float(text) - float(expected)) < 1e-9
-    except (TypeError, ValueError):
-        return False
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return build_parser().parse_args(shlex.split(tail, comments=True))
+    except (SystemExit, ValueError):
+        return None
 
 
 def d4_cli_call(record: dict, case: dict) -> Grade:
@@ -131,8 +134,9 @@ def d4_cli_call(record: dict, case: dict) -> Grade:
     cli = [cmd for cmd in commands if isinstance(cmd, str) and CLI_CALL.search(cmd)]
     crop = case.get("crop", "basil")
     for cmd in cli:
-        if (_arg(cmd, "crop") == crop and _same_number(_arg(cmd, "lat"), case["lat"])
-                and _same_number(_arg(cmd, "lon"), case["lon"])):
+        args = _cli_args(cmd)
+        if (args is not None and args.crop == crop and args.lat == float(case["lat"])
+                and args.lon == float(case["lon"])):
             return Grade("D4", "pass", f"ran the CLI with --crop {crop} and the case coordinates",
                          ({"start": None, "end": None, "text": cmd},), ())
     why = (f"no CLI call with --crop {crop} --lat {case['lat']} --lon {case['lon']}" if cli

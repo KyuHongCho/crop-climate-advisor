@@ -250,6 +250,8 @@ condition's subject is offered it, the trial also records `harness-error`. Sessi
 (`--no-session-persistence`) and auto memory is off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`), so trials
 leave no transcript folders behind. The record's `status` (`ok`, `runaway`, `contract-violation`,
 `infra-error` or `harness-error`) is computed from its `status_inputs` alone, by `evals/status.py`.
+A `CROP_ADVISOR_REPLAY_MISSING` naming a file other than the case's own means the subject typed other
+coordinates; that trial is graded, not excluded, and D4 fails it as `wrong-cli-args` unless some call used the case's coordinates.
 
 Every string value in a record is redacted before it is written, except the identity fields,
 `subject`, the skill hash, the listed skills and the condition label (best effort: dict keys, the temporary
