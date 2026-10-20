@@ -302,13 +302,18 @@ Each run writes `evals/results/<run-id>/` (gitignored): `trials.jsonl`, one reco
 and `summary.md`, the run header plus the same report `python -m evals.report <run dir>` prints. An
 `infra-error` is run once more; a second one is excluded.
 
-The run stops, keeps what it has, writes a `partial` snapshot and exits 1 when:
+The run stops, keeps what it has, writes a snapshot and exits 1 when:
 
 - spend reaches the cap;
 - a trial ends with a setup fault no re-run would fix (`harness-error` under rule 1, 1b, 1c, 4b or 5) or reports
   a model other than the configured one;
-- three slots in a row are excluded for one model and condition.
+- three slots in a row are excluded for one model and condition;
+- the `claude` version or the skill's content changes during the run (the snapshot's status is then
+  `mixed-version` or `mixed-skill`, and such a snapshot is never published);
+- you press Ctrl-C or send SIGTERM or SIGHUP, as when a terminal closes (`stop_reason: interrupted`): the
+  `claude` child's process group is killed, and the attempt that was running has no record and is named in the
+  snapshot's `in_flight`. Under `nohup` a SIGHUP is ignored and the run goes on.
 
-Your own instruction files stop the run on its first trial (rule 1). An interrupt (Ctrl-C) or SIGTERM can leave a
-`claude` process running, because the run does not yet stop its child process when it is interrupted; SIGTERM
-also leaves no snapshot.
+Your own instruction files stop the run on its first trial (rule 1). SIGKILL ends the run without a snapshot and
+can leave the `claude` child running; so can a signal that lands in the few milliseconds in which a trial's
+`claude` process is being started.

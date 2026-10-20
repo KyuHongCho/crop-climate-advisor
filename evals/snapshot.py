@@ -14,6 +14,7 @@ SNAPSHOT_FILE = "snapshot.json"
 SUMMARY_FILE = "summary.md"
 RUN_ID = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{8}")
 _ACCESSED = re.compile(r"^- \*\*Accessed:\*\* (\d{4}-\d{2}-\d{2})", re.MULTILINE)
+_STATUS_BY_STOP = {None: "complete", "version-changed": "mixed-version", "skill-changed": "mixed-skill"}
 
 
 def utc_now() -> str:
@@ -120,13 +121,14 @@ def project(settings, subjects, n, n_cases, results_dir, claude_path) -> dict:
 
 def build_snapshot(*, run_id, stop_reason, started, finished, overrides, approved_spend_usd, claude_path,
                    config_sha256, settings, eval_set, subjects, judge, fixture_accessed, planned_slots,
-                   projection, records) -> dict:
+                   projection, records, in_flight=None) -> dict:
     slots = {(r["case_id"], r["subject"]["model"], r["condition"]["condition"], r["rep"]) for r in records}
     costs = [attempt_cost(r) for r in records]
     snap = {
         "run_id": run_id,
-        "status": "complete" if stop_reason is None else "partial",
+        "status": _STATUS_BY_STOP.get(stop_reason, "partial"),
         "stop_reason": stop_reason,
+        "in_flight": in_flight,
         "started_utc": started,
         "finished_utc": finished,
         "overrides": overrides,

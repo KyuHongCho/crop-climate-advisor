@@ -9,10 +9,15 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from collections import namedtuple
 from pathlib import Path
@@ -31,6 +36,7 @@ EVAL_SET = cases.load()
 CASE_IDS = [c["id"] for c in EVAL_SET["cases"]]
 SAMPLES = {s["name"]: s for s in json.loads((SAMPLES_DIR / "samples.json").read_text(encoding="utf-8"))["samples"]}
 DEADLINE = 240
+PID_WAIT, EXIT_WAIT, GONE_WAIT = 60, 20, 5
 _state = {}
 
 
@@ -54,6 +60,64 @@ def setUpModule():
 def tearDownModule():
     if _state["log"].exists():
         raise AssertionError(f"a test reached `claude`: {_state['log'].read_text()}")
+
+
+def alive(pid):
+    """True while the process exists and is not a zombie, so no test depends on an init process reaping orphans."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=30).stdout
+    return bool(state.strip()) and not state.strip().startswith("Z")
+
+
+def group_members(pgid):
+    found = subprocess.run(["pgrep", "-g", str(pgid)], capture_output=True, text=True, timeout=30).stdout.split()
+    return [int(pid) for pid in found if alive(int(pid))]
+
+
+def wait_until(condition, seconds, what):
+    end = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > end:
+            raise AssertionError(f"{what} did not happen within {seconds}s")
+        time.sleep(0.05)
+
+
+def wait_pid(pid_file, seconds=PID_WAIT):
+    def written():
+        return Path(pid_file).is_file() and Path(pid_file).read_text().strip().isdigit()
+    wait_until(written, seconds, f"a pid in {pid_file}")
+    return int(Path(pid_file).read_text().strip())
+
+
+def reap_group(pid, pgid):
+    """SIGKILL the group `pid` was seen in, but only while `pid` is still in it, and never our own group."""
+    if pgid <= 1 or pgid == os.getpgrp():
+        return
+    try:
+        if os.getpgid(pid) == pgid:
+            os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+class Tracking:
+    def track(self, pid_file):
+        """Wait for a stand-in's sleeper pid, arrange to reap its group, and return (pid, pgid)."""
+        pid = wait_pid(pid_file)
+        pgid = os.getpgid(pid)
+        self.assertGreater(pgid, 1)
+        self.assertNotEqual(pgid, os.getpgrp())
+        self.addCleanup(reap_group, pid, pgid)
+        return pid, pgid
+
+    def assertGone(self, pid, pgid):
+        wait_until(lambda: not alive(pid) and not group_members(pgid), GONE_WAIT,
+                   f"process {pid} and group {pgid} gone")
 
 
 # One name per scripted outcome, then the stored sample that produces it for each condition.
@@ -82,7 +146,7 @@ def sample_record(kw, sample, cost=0.05):
         run_result={"stderr": s["stderr"], "exit_code": s["exit_code"], "signal": s["signal"],
                     "timed_out": s["timed_out"], "latency_ms": 1500},
         parsed=claude_code.parse(lines) if lines else {}, harness_exception=s["harness_exception"],
-        skill_sha="0" * 64, env={})
+        skill_sha=record.skill_sha256(claude_code.SKILL_DIR), env={})
     rec["usage"]["cost_usd"] = cost
     return rec
 
@@ -134,7 +198,7 @@ def slot_of(rec):
 Result = namedtuple("Result", "code out err run_dir")
 
 
-class RunCase(unittest.TestCase):
+class RunCase(Tracking, unittest.TestCase):
     def setUp(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
@@ -628,10 +692,10 @@ class R3Test(RunCase):
 
 
 class SnapshotTest(RunCase):
-    TOP = {"run_id", "status", "stop_reason", "started_utc", "finished_utc", "overrides", "approved_spend_usd",
-           "claude_path", "config_sha256", "settings", "eval_set_version", "eval_set_sha256", "subjects", "judge",
-           "fixture_accessed", "cli_versions", "skill_sha256s", "counts", "spend_usd", "unpriced", "projection",
-           "cost_by_key", "report"}
+    TOP = {"run_id", "status", "stop_reason", "in_flight", "started_utc", "finished_utc", "overrides",
+           "approved_spend_usd", "claude_path", "config_sha256", "settings", "eval_set_version", "eval_set_sha256",
+           "subjects", "judge", "fixture_accessed", "cli_versions", "skill_sha256s", "counts", "spend_usd", "unpriced",
+           "projection", "cost_by_key", "report"}
 
     def test_fields_report_and_cost_by_key(self):
         cfg_path = self.config_path()
@@ -653,7 +717,8 @@ class SnapshotTest(RunCase):
         self.assertEqual((snap["eval_set_version"], snap["eval_set_sha256"]), ("1", EVAL_SET["sha256"]))
         self.assertEqual((snap["subjects"], snap["judge"]), ([SONNET, HAIKU], "claude-opus-5-5"))
         self.assertRegex(snap["fixture_accessed"], r"^\d{4}-\d\d-\d\d$")
-        self.assertEqual((snap["cli_versions"], snap["skill_sha256s"]), (["9.9.9"], ["0" * 64]))
+        self.assertEqual((snap["cli_versions"], snap["skill_sha256s"]),
+                         (["9.9.9"], [record.skill_sha256(claude_code.SKILL_DIR)]))
         self.assertEqual(snap["counts"], {"planned_slots": 32, "slots_started": 32, "attempts": 32, "reruns": 0,
                                           "by_status": {"ok": 32}})
         self.assertEqual((snap["unpriced"], round(snap["spend_usd"], 6)), (1, round(0.4 + 0.16 + 0.32 + 0.21, 6)))
@@ -722,31 +787,25 @@ class SnapshotTest(RunCase):
         self.assertEqual(self.snap(res)["overrides"], {"n": 1})
 
     def test_zero_records_give_a_null_report_and_a_summary_that_says_so(self):
-        for error in (RuntimeError, KeyboardInterrupt):
-            with self.subTest(error=error.__name__):
-                shutil.rmtree(self.results, ignore_errors=True)
-                with self.assertRaises(error):
-                    self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=0, error=error))
-                res = Result(None, "", "", sorted(self.results.glob("*"))[-1])
-                snap = self.snap(res)
-                self.assertIsNone(snap["report"])
-                self.assertEqual((snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
-                                 ("partial", f"error:{error.__name__}", 0))
-                self.assertIn("No trial records.", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
+        with self.assertRaises(RuntimeError):
+            self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=0))
+        res = Result(None, "", "", sorted(self.results.glob("*"))[-1])
+        snap = self.snap(res)
+        self.assertIsNone(snap["report"])
+        self.assertEqual((snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
+                         ("partial", "error:RuntimeError", 0))
+        self.assertIn("No trial records.", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
 
-    def test_an_unexpected_exception_or_an_interrupt_writes_a_partial_snapshot_and_propagates(self):
-        for error in (RuntimeError, KeyboardInterrupt):
-            with self.subTest(error=error.__name__):
-                shutil.rmtree(self.results, ignore_errors=True)
-                with self.assertRaises(error):
-                    self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=2, error=error))
-                res = Result(None, "", "", sorted(self.results.glob("*"))[-1])
-                snap = self.snap(res)
-                self.assertEqual((snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
-                                 ("partial", f"error:{error.__name__}", 2))
-                self.assertEqual(len(self.records(res)), 2)
-                summary = (res.run_dir / "summary.md").read_text(encoding="utf-8")
-                self.assertIn("slots started 2 of 16 planned", summary)
+    def test_an_unexpected_exception_writes_a_partial_snapshot_and_propagates(self):
+        with self.assertRaises(RuntimeError):
+            self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=2))
+        res = Result(None, "", "", sorted(self.results.glob("*"))[-1])
+        snap = self.snap(res)
+        self.assertEqual((snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
+                         ("partial", "error:RuntimeError", 2))
+        self.assertEqual(len(self.records(res)), 2)
+        summary = (res.run_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertIn("slots started 2 of 16 planned", summary)
 
     def test_a_failing_summary_does_not_replace_the_exception_that_stopped_the_run(self):
         with mock.patch.object(report, "format_report", side_effect=ValueError("fmt")):
@@ -814,6 +873,389 @@ class BootstrapConfigTest(RunCase):
         self.assertEqual(snap["report"], json.loads(json.dumps(report.build_report(recs, EVAL_SET, 7, 200))))
 
 
+def version_changed(old="9.9.9", new="9.9.10"):
+    return lambda message: claude_code.VersionChanged(f"{old} -> {new}")
+
+
+class VersionTest(RunCase):
+    def case(self):
+        return cases.get("bangkok")[1]
+
+    def trial(self, binary, **kw):
+        return claude_code.run_trial(case=self.case(), eval_set=EVAL_SET, model=SONNET, condition="no-skill",
+                                     budget_usd=0.5, timeout=60, trial_id="t", binary=binary, **kw)
+
+    def test_a_version_change_stops_the_run_before_the_model_starts(self):
+        d = self.stand_in(bump_version_after=5)
+        with self.on_path(d):
+            res = self.go("--n", "1", "--approve-spend", "1", real=True)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"]), (1, "mixed-version", "version-changed"))
+        self.assertEqual(len(self.records(res)), 5)
+        self.assertEqual(len((d / "claude.starts").read_text().splitlines()), 5)
+        self.assertEqual(len((d / "claude.count").read_text().splitlines()), 6)
+        self.assertIsNone(snap["in_flight"])
+        self.assertEqual(snap["cli_versions"], ["9.9.9"])
+        self.assertIn("version changed: 9.9.9 -> 9.9.10", res.err)
+
+    def test_run_trial_raises_on_a_different_version_and_runs_on_the_same_or_none(self):
+        d = self.stand_in(bump_version_after=99)
+        binary = str(d / "claude")
+        with self.assertRaises(claude_code.VersionChanged) as caught:
+            self.trial(binary, expected_cli_version="0.0.0")
+        self.assertEqual(str(caught.exception), "0.0.0 -> 9.9.9")
+        self.assertFalse((d / "claude.starts").exists())
+        for expected in ("9.9.9", None):
+            with self.subTest(expected=expected):
+                rec = self.trial(binary, expected_cli_version=expected)
+                self.assertEqual((rec["status"], rec["subject"]["cli_version"]), ("ok", "9.9.9"))
+        self.assertEqual(len((d / "claude.starts").read_text().splitlines()), 2)
+
+    def test_the_baseline_comes_from_the_first_record_and_a_scripted_change_stops_the_run(self):
+        script = Script(error_at=3, error=version_changed())
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual([c["expected_cli_version"] for c in script.calls], [None, "9.9.9", "9.9.9", "9.9.9"])
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"]), (1, "mixed-version", "version-changed"))
+        self.assertEqual(len(self.records(res)), 3)
+        self.assertIsNone(snap["in_flight"])
+        self.assertIn("version changed: 9.9.9 -> 9.9.10", res.err)
+
+
+class SkillHashTest(RunCase):
+    def stop(self, tweak, **kw):
+        script = Script(tweak=tweak, **kw)
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        return res, script, self.snap(res)
+
+    def test_a_changed_skill_hash_stops_the_run_and_keeps_the_record(self):
+        def changed(i, kw, rec):
+            if i == 2:
+                rec["condition"]["skill_sha256"] = "f" * 64
+
+        res, script, snap = self.stop(changed)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"]), (1, "mixed-skill", "skill-changed"))
+        self.assertEqual((len(script.calls), len(self.records(res))), (3, 3))
+        self.assertEqual(self.records(res)[-1]["condition"]["skill_sha256"], "f" * 64)
+        self.assertIsNone(snap["in_flight"])
+
+    def test_a_null_hash_and_a_no_skill_record_are_not_compared(self):
+        def null_hash(i, kw, rec):
+            if rec["condition"]["condition"] == "skill":
+                rec["condition"]["skill_sha256"] = None
+
+        def hash_on_no_skill(i, kw, rec):
+            if rec["condition"]["condition"] == "no-skill":
+                rec["condition"]["skill_sha256"] = "f" * 64
+
+        for name, tweak in (("null", null_hash), ("no-skill", hash_on_no_skill)):
+            with self.subTest(name):
+                shutil.rmtree(self.results, ignore_errors=True)
+                res, script, snap = self.stop(tweak)
+                self.assertEqual((res.code, snap["status"], len(script.calls)), (0, "complete", 16))
+
+    def test_a_record_that_trips_both_the_skill_guard_and_r3_reports_the_skill_change(self):
+        def both(i, kw, rec):
+            if i == 2:
+                rec["condition"]["skill_sha256"] = "f" * 64
+                rec["subject"]["canonical_models"] = ["claude-opus-5-5"]
+
+        res, script, snap = self.stop(both)
+        self.assertEqual((res.code, snap["stop_reason"]), (1, "skill-changed"))
+
+
+class RunStopsTheChildTest(RunCase):
+    """`claude_code.run` on a stand-in that sleeps, with Popen, killpg or Thread.start rigged to interrupt it."""
+
+    def stand_in_path(self):
+        return fake_claude(tempfile.mkdtemp(dir=self.tmp), sleep=25)
+
+    def run_interrupted(self, patch_in, path=None, group_dies=True):
+        path = path or self.stand_in_path()
+        pid_file = path + ".pid"
+        state = {}
+
+        def interrupt():
+            state["pid"], state["pgid"] = self.track(pid_file)
+            state["at"] = time.monotonic()
+            raise KeyboardInterrupt
+
+        with patch_in(interrupt), self.assertRaises(KeyboardInterrupt):
+            claude_code.run([path, "-p", "x"], self.tmp, dict(os.environ), 60)
+        self.assertLess(time.monotonic() - state["at"], 5)
+        if group_dies:
+            self.assertGone(state["pid"], state["pgid"])
+
+    @staticmethod
+    def popen_that_interrupts(interrupt, made=None):
+        class Popen(subprocess.Popen):
+            armed = True
+
+            def wait(self, timeout=None):
+                if Popen.armed:
+                    Popen.armed = False
+                    if made is not None:
+                        made.append(self)
+                    interrupt()
+                return super().wait(timeout)
+        return mock.patch.object(subprocess, "Popen", Popen)
+
+    def test_an_interrupt_in_the_first_wait_kills_the_group_and_propagates(self):
+        self.run_interrupted(self.popen_that_interrupts)
+
+    def test_a_group_that_is_already_gone_does_not_replace_the_interrupt(self):
+        real_killpg = os.killpg
+        for error in (ProcessLookupError, PermissionError):
+            with self.subTest(error=error.__name__):
+                def killpg_then_fail(pgid, sig):
+                    real_killpg(pgid, sig)
+                    raise error
+
+                def patch_in(interrupt):
+                    stack = contextlib.ExitStack()
+                    stack.enter_context(self.popen_that_interrupts(interrupt))
+                    stack.enter_context(mock.patch.object(claude_code.os, "killpg", killpg_then_fail))
+                    return stack
+                self.run_interrupted(patch_in)
+
+    def test_a_survivor_outside_the_group_does_not_stall_the_interrupt(self):
+        stand_in = Path(tempfile.mkdtemp(dir=self.tmp)) / "claude"
+        code = "import os,sys,time; os.setsid(); open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(25)"
+        stand_in.write_text(f'#!/bin/sh\n{shlex.quote(sys.executable)} -I -c {shlex.quote(code)} "$0.pid" &\nwait\n')
+        stand_in.chmod(stand_in.stat().st_mode | stat.S_IXUSR)
+        made = []
+
+        def close_leaked_streams():
+            for proc in made:
+                for stream in (proc.stdout, proc.stderr):
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        # Registered before the survivor is tracked, so it runs after the survivor is reaped and closing cannot block.
+        self.addCleanup(close_leaked_streams)
+        self.run_interrupted(lambda interrupt: self.popen_that_interrupts(interrupt, made), path=str(stand_in),
+                             group_dies=False)
+
+    def test_an_interrupt_while_the_readers_start_kills_the_group(self):
+        def patch_in(interrupt):
+            def start(thread):
+                interrupt()
+            return mock.patch.object(threading.Thread, "start", start)
+        self.run_interrupted(patch_in)
+
+
+class InterruptTest(RunCase):
+    def interrupt(self, signum):
+        d = self.stand_in(f"bin{int(signum)}", sleep=25)
+        env = {**os.environ, "PATH": f"{d}{os.pathsep}{os.environ['PATH']}"}
+
+        def child_signals():
+            # The signal under test starts ignored, as a background job's SIGINT does; SIGHUP never starts ignored.
+            signal.signal(signal.SIGHUP, signal.SIG_DFL)
+            if signum != signal.SIGHUP:
+                signal.signal(signum, signal.SIG_IGN)
+        proc = subprocess.Popen([sys.executable, "-m", "evals.run", "--n", "2", "--approve-spend", "2",
+                                 "--results-dir", str(self.results)], cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, preexec_fn=child_signals)
+        self.addCleanup(lambda: proc.poll() is None and (proc.kill(), proc.wait()))
+        pid, pgid = self.track(d / "claude.pid")
+        proc.send_signal(signum)
+        try:
+            _, err = proc.communicate(timeout=EXIT_WAIT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            self.fail(f"evals.run did not stop within {EXIT_WAIT}s of signal {int(signum)}")
+        return proc.returncode, err, pid, pgid
+
+    def test_sigint_sigterm_and_sighup_stop_the_run_with_no_child_left(self):
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=signum.name):
+                shutil.rmtree(self.results, ignore_errors=True)
+                code, err, pid, pgid = self.interrupt(signum)
+                (run_dir,) = self.results.iterdir()
+                snap = self.snap(Result(None, "", "", run_dir))
+                self.assertEqual((code, snap["status"], snap["stop_reason"]), (1, "partial", "interrupted"), err)
+                self.assertNotIn("Traceback", err)
+                slot = snap["in_flight"]
+                self.assertEqual(set(slot), {"case_id", "model", "condition", "rep", "attempt", "trial_id"})
+                self.assertEqual((slot["case_id"], slot["model"], slot["condition"], slot["rep"], slot["attempt"]),
+                                 (CASE_IDS[0], SONNET, "skill", 1, 1))
+                self.assertEqual(snap["counts"]["attempts"], 0)
+                self.assertGone(pid, pgid)
+
+    def test_a_scripted_interrupt_is_a_clean_stop_with_the_attempt_in_flight(self):
+        script = Script(error_at=2, error=KeyboardInterrupt)
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"]), (1, "partial", "interrupted"))
+        self.assertEqual(len(self.records(res)), 2)
+        call = script.calls[2]
+        self.assertEqual(snap["in_flight"], {"case_id": call["case"]["id"], "model": call["model"],
+                                             "condition": call["condition"], "rep": 1, "attempt": 1,
+                                             "trial_id": call["trial_id"]})
+        self.assertIn("partial (interrupted)", res.err)
+
+    def test_an_interrupt_before_any_record_gives_a_null_report(self):
+        res = self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=0, error=KeyboardInterrupt))
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["stop_reason"], snap["report"]), (1, "interrupted", None))
+        self.assertIn("No trial records.", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
+
+    def test_a_failing_snapshot_after_an_interrupt_raises(self):
+        with mock.patch.object(snapshot, "build_snapshot", side_effect=ValueError("snap")):
+            with self.assertRaises(ValueError):
+                self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=1, error=KeyboardInterrupt))
+
+
+class HandlerTest(RunCase):
+    SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(lambda saved=self.current(): [signal.signal(s, h) for s, h in saved.items()])
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        self.original = self.current()
+
+    def current(self):
+        return {s: signal.getsignal(s) for s in self.SIGNALS}
+
+    def watched(self, seen, error_at=None):
+        """A scripted run_trial and a build_snapshot patch that note the handlers in force during each."""
+        script = Script(error_at=error_at)
+
+        def call(**kw):
+            seen.setdefault("trial", self.current())
+            return script(**kw)
+        build = snapshot.build_snapshot
+
+        def spy(**kw):
+            seen["snapshot"] = self.current()
+            return build(**kw)
+        return call, mock.patch.object(snapshot, "build_snapshot", spy)
+
+    def test_the_handlers_are_installed_ignored_while_writing_and_restored(self):
+        seen = {}
+        script, spy = self.watched(seen)
+        with spy:
+            res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertEqual(res.code, 0)
+        self.assertIs(seen["trial"][signal.SIGINT], signal.default_int_handler)
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            with self.assertRaises(KeyboardInterrupt):
+                seen["trial"][signum](signum, None)
+        self.assertEqual(seen["snapshot"], {s: signal.SIG_IGN for s in self.SIGNALS})
+        self.assertEqual(self.current(), self.original)
+
+    def test_the_handlers_are_restored_after_an_unexpected_exception(self):
+        seen = {}
+        script, spy = self.watched(seen, error_at=1)
+        with spy, self.assertRaises(RuntimeError):
+            self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertEqual(seen["snapshot"], {s: signal.SIG_IGN for s in self.SIGNALS})
+        self.assertEqual(self.current(), self.original)
+
+    def test_a_sighup_that_is_already_ignored_is_left_alone(self):
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        seen = {}
+        script, spy = self.watched(seen)
+        with spy:
+            self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertIs(seen["trial"][signal.SIGHUP], signal.SIG_IGN)
+        self.assertIs(seen["trial"][signal.SIGINT], signal.default_int_handler)
+        self.assertIsNot(seen["trial"][signal.SIGTERM], self.original[signal.SIGTERM])
+        self.assertIs(self.current()[signal.SIGHUP], signal.SIG_IGN)
+
+    def test_main_on_another_thread_starts_and_leaves_the_handlers_alone(self):
+        seen, out = {}, {}
+        script, spy = self.watched(seen)
+
+        def target():
+            try:
+                out["res"] = self.go("--n", "1", "--approve-spend", "1", script=script)
+            except BaseException as e:  # noqa: BLE001 - reported to the test thread
+                out["error"] = e
+        with spy:
+            thread = threading.Thread(target=target)
+            thread.start()
+            thread.join(DEADLINE)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", out)
+        self.assertEqual(out["res"].code, 0)
+        self.assertEqual(seen["trial"], self.original)
+        self.assertEqual(self.current(), self.original)
+
+
+class StatusMapTest(unittest.TestCase):
+    def build(self, stop_reason, **kw):
+        return snapshot.build_snapshot(
+            run_id="r", stop_reason=stop_reason, started="s", finished="f", overrides={}, approved_spend_usd=None,
+            claude_path="c", config_sha256="x", settings={}, eval_set={}, subjects=[SONNET], judge="j",
+            fixture_accessed=None, planned_slots=0, projection={}, records=[], **kw)
+
+    def test_the_stop_reason_decides_the_status_and_in_flight_defaults_to_null(self):
+        table = {None: "complete", "version-changed": "mixed-version", "skill-changed": "mixed-skill",
+                 "interrupted": "partial", "spend-cap": "partial", "error:RuntimeError": "partial",
+                 "r3": "partial", "systemic:1c": "partial"}
+        for stop, status in table.items():
+            with self.subTest(stop=stop):
+                snap = self.build(stop)
+                self.assertEqual((snap["status"], snap["stop_reason"], snap["in_flight"]), (status, stop, None))
+        self.assertEqual(self.build("interrupted", in_flight={"trial_id": "t"})["in_flight"], {"trial_id": "t"})
+
+
+class InFlightTest(RunCase):
+    CHEAP = {m: {c: 0.001 for c in CONDITIONS} for m in (SONNET, HAIKU)}
+
+    def test_an_unexpected_exception_names_the_attempt_in_flight(self):
+        script = Script(error_at=2)
+        with self.assertRaises(RuntimeError):
+            self.go("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(Result(None, "", "", sorted(self.results.glob("*"))[-1]))
+        self.assertEqual(snap["stop_reason"], "error:RuntimeError")
+        self.assertEqual(snap["in_flight"]["trial_id"], script.calls[2]["trial_id"])
+
+    def test_other_stops_leave_it_null(self):
+        stops = {"spend-cap": (dict(cost=0.30), {"cost_defaults_usd": self.CHEAP}),
+                 "version-changed": (dict(error_at=3, error=version_changed()), {}),
+                 "r3": (dict(tweak=lambda i, kw, rec: rec["subject"].update(canonical_models=["claude-opus-5-5"])), {}),
+                 "systemic:1c": (dict(plan={(1, "london", SONNET, "skill"): ("sys",)}), {})}
+        for stop, (kw, over) in stops.items():
+            with self.subTest(stop=stop):
+                shutil.rmtree(self.results, ignore_errors=True)
+                res = self.go("--n", "1", "--approve-spend", "1", script=Script(**kw), over=over)
+                snap = self.snap(res)
+                self.assertEqual((res.code, snap["stop_reason"], snap["in_flight"]), (1, stop, None))
+
+    def test_a_record_that_could_not_be_written_is_not_counted(self):
+        real_dumps, seen = json.dumps, []
+
+        def dumps(obj, *args, **kwargs):
+            if isinstance(obj, dict) and "trial_id" in obj:
+                seen.append(obj["trial_id"])
+                if len(seen) == 2:
+                    raise KeyboardInterrupt
+            return real_dumps(obj, *args, **kwargs)
+        script = Script()
+        with mock.patch.object(run.json, "dumps", dumps):
+            res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["stop_reason"], snap["counts"]["attempts"]), (1, "interrupted", 1))
+        self.assertEqual(len(self.records(res)), 1)
+        self.assertEqual(snap["in_flight"]["trial_id"], script.calls[1]["trial_id"])
+        self.assertEqual(snap["in_flight"]["trial_id"], seen[1])
+
+
+class SkillFolderTest(RunCase):
+    def test_an_unreadable_skill_folder_exits_2_with_nothing_created(self):
+        with mock.patch.object(record, "skill_sha256", side_effect=OSError("denied")):
+            res = self.go("--n", "1", "--approve-spend", "1")
+        self.assertNothingRan(res)
+        self.assertIn(str(claude_code.SKILL_DIR), res.err)
+        self.assertIn("denied", res.err)
+
+
 class ModuleTest(unittest.TestCase):
     def test_gitignore_and_the_default_results_dir(self):
         self.assertIn("evals/results/", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
@@ -831,7 +1273,7 @@ class ModuleTest(unittest.TestCase):
         self.assertTrue({"evals.run", "evals.snapshot"} <= set(imported["modules"]))
 
 
-class StandInTest(unittest.TestCase):
+class StandInTest(Tracking, unittest.TestCase):
     def run_stand_in(self, directory, *args):
         return subprocess.run([str(Path(directory) / "claude"), *args], capture_output=True, text=True, timeout=60)
 
@@ -860,6 +1302,41 @@ class StandInTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(proc.stdout.strip(), str(Path(d) / "claude"))
             self.assertTrue(os.access(Path(d) / "claude", os.X_OK))
+
+    def make(self, *flags):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        proc = subprocess.run([sys.executable, "-m", "tests.fake_claude", d.name, *flags], cwd=ROOT,
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return Path(d.name)
+
+    def test_the_bump_flag_answers_the_new_version_after_k_calls_and_the_default_never_does(self):
+        d = self.make("--bump-version-after", "2")
+        versions = [self.run_stand_in(d, "--version").stdout.split()[0] for _ in range(3)]
+        self.assertEqual(versions, ["9.9.9", "9.9.9", "9.9.10"])
+        self.assertEqual(len((d / "claude.count").read_text().splitlines()), 3)
+        self.assertFalse((d / "claude.starts").exists())
+        self.run_stand_in(d, "-p", "x", "--model", HAIKU, "--tools", "")
+        self.assertEqual(len((d / "claude.starts").read_text().splitlines()), 1)
+        plain = self.make()
+        self.assertEqual([self.run_stand_in(plain, "--version").stdout.split()[0] for _ in range(3)], ["9.9.9"] * 3)
+        self.assertEqual(sorted(p.name for p in plain.iterdir()), ["claude"])
+
+    def test_the_sleep_flag_starts_a_sleeper_that_carries_the_stand_ins_path(self):
+        d = self.make("--sleep", "25")
+        stand_in = str(d / "claude")
+        proc = subprocess.Popen([stand_in, "-p", "x", "--model", HAIKU, "--tools", ""], start_new_session=True,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: proc.wait(timeout=30))
+        pid, pgid = self.track(d / "claude.pid")
+        self.assertTrue(alive(pid))
+        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True,
+                                 timeout=30).stdout
+        self.assertIn(stand_in, command)
+        self.assertEqual(pgid, proc.pid)
+        reap_group(pid, pgid)
+        self.assertGone(pid, pgid)
 
 
 class SubprocessRunTest(unittest.TestCase):
