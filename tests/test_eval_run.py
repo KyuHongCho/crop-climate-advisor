@@ -1,0 +1,896 @@
+"""The run loop, offline: start-up order, projection, caps, the stop policy and the snapshot.
+
+Loop tests replace `claude_code.run_trial` with a scripted function; the few that run the real one use a stand-in
+`claude` first on PATH. A tripwire `claude` sits behind both, and the module fails if it was ever started.
+"""
+import contextlib
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from collections import namedtuple
+from pathlib import Path
+from unittest import mock
+
+from evals import cases, config, record, record_fixtures, report, run, snapshot, stats, trial
+from evals.adapters import claude_code
+from tests.fake_claude import ECHO_STREAMS, SAMPLES_DIR, fake_claude, sample_lines, tripwire
+from tests.test_eval_imports import _import_all
+
+ROOT = Path(__file__).resolve().parent.parent
+REAL_RESULTS_DIR = run.DEFAULT_RESULTS_DIR
+SONNET, HAIKU = "claude-sonnet-5-5", "claude-haiku-5-5"
+CONDITIONS = ("skill", "no-skill")
+EVAL_SET = cases.load()
+CASE_IDS = [c["id"] for c in EVAL_SET["cases"]]
+SAMPLES = {s["name"]: s for s in json.loads((SAMPLES_DIR / "samples.json").read_text(encoding="utf-8"))["samples"]}
+DEADLINE = 240
+_state = {}
+
+
+def setUpModule():
+    tmp = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(tmp.cleanup)
+    base = Path(tmp.name)
+    for name in ("trip", "cfg", "results"):
+        (base / name).mkdir()
+    _state["log"] = tripwire(base / "trip")
+    patcher = mock.patch.dict(os.environ, {
+        "USER": "testuser", "LOGNAME": "testuser", "USERNAME": "testuser", "CLAUDE_CONFIG_DIR": str(base / "cfg"),
+        "PATH": str(base / "trip") + os.pathsep + os.environ.get("PATH", "")})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+    results = mock.patch.object(run, "DEFAULT_RESULTS_DIR", base / "results")
+    results.start()
+    unittest.addModuleCleanup(results.stop)
+
+
+def tearDownModule():
+    if _state["log"].exists():
+        raise AssertionError(f"a test reached `claude`: {_state['log'].read_text()}")
+
+
+# One name per scripted outcome, then the stored sample that produces it for each condition.
+OUTCOMES = {
+    "ok": {"skill": "skill_ok", "no-skill": "no_skill_ok"},
+    "infra": {"skill": "nasa_network_failure", "no-skill": "api_429_rate_limit"},
+    "sys": {"skill": "skill_not_offered", "no-skill": "api_404_bad_model"},
+    "runaway": {"no-skill": "runaway_budget"},
+    "cv": {"skill": "skill_no_cli_call"},
+    "harness": {"no-skill": "error_during_execution"},
+    "loggedout": {"no-skill": "not_logged_in"},
+    "replay": {"skill": "replay_missing_model_answers"},
+}
+
+
+def sample_record(kw, sample, cost=0.05):
+    """A record built by claude_code.to_record from a stored sample, under the slot `run_trial` was called for."""
+    s = SAMPLES[sample]
+    model, condition = kw["model"], kw["condition"]
+    assert s["condition"] == condition, f"{sample} is a {s['condition']} sample"
+    lines = ([(ms, line.replace("claude-haiku-5-5", model)) for ms, line in sample_lines(s["stream"])]
+             if s["stream"] else [])
+    rec = claude_code.to_record(
+        case=kw["case"], eval_set=kw["eval_set"], trial_id=kw["trial_id"], model=model, condition=condition,
+        cli_version_="9.9.9",
+        run_result={"stderr": s["stderr"], "exit_code": s["exit_code"], "signal": s["signal"],
+                    "timed_out": s["timed_out"], "latency_ms": 1500},
+        parsed=claude_code.parse(lines) if lines else {}, harness_exception=s["harness_exception"],
+        skill_sha="0" * 64, env={})
+    rec["usage"]["cost_usd"] = cost
+    return rec
+
+
+def outcome_record(kw, name, cost):
+    if name == "excl":
+        # Synthesised: a harness-error no systemic rule covers (rule 8), for a condition with no stored sample.
+        rec = sample_record(kw, OUTCOMES["ok"][kw["condition"]], cost)
+        rec.update(status="harness-error", status_rule="8", status_reason="synthesised: exit 1 matched no rule",
+                   tags=["harness-error"])
+        return rec
+    return sample_record(kw, OUTCOMES[name][kw["condition"]], cost)
+
+
+class Script:
+    """Stands in for claude_code.run_trial: `plan` maps (rep, case, model, condition) to one outcome per attempt."""
+
+    def __init__(self, plan=None, cost=0.05, error_at=None, tweak=None, default="ok", error=RuntimeError):
+        self.plan, self.cost, self.error_at, self.tweak, self.default = plan or {}, cost, error_at, tweak, default
+        self.error = error
+        self.calls = []
+
+    def __call__(self, **kw):
+        i = len(self.calls)
+        self.calls.append(kw)
+        if i == self.error_at:
+            raise self.error("boom")
+        rep, attempt = map(int, re.search(r"-r(\d+)-a(\d)-", kw["trial_id"]).groups())
+        outcomes = self.plan.get((rep, kw["case"]["id"], kw["model"], kw["condition"]), (self.default,))
+        cost = self.cost(i, kw) if callable(self.cost) else self.cost
+        rec = outcome_record(kw, outcomes[min(attempt, len(outcomes)) - 1], cost)
+        if self.tweak:
+            self.tweak(i, kw, rec)
+        return rec
+
+
+def forbidden(**kw):
+    raise AssertionError(f"run_trial was reached: {kw.get('trial_id')}")
+
+
+def refuse_spawn(*args, **kwargs):
+    raise AssertionError(f"a process was started: {args!r}")
+
+
+def slot_of(rec):
+    return rec["rep"], rec["case_id"], rec["subject"]["model"], rec["condition"]["condition"]
+
+
+Result = namedtuple("Result", "code out err run_dir")
+
+
+class RunCase(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.tmp = Path(d.name)
+        self.results = self.tmp / "results"
+
+    def config_path(self, **over):
+        cfg = json.loads(config.DEFAULT_PATH.read_text(encoding="utf-8"))
+        cfg.update(bootstrap_resamples=200, bootstrap_seed=7, trial_timeout_s=60)
+        cfg.update(over)
+        path = self.tmp / f"config{len(list(self.tmp.glob('config*.json')))}.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return str(path)
+
+    def go(self, *args, script=forbidden, real=False, over=None, results=True):
+        """Run `evals.run.main` in-process; with `real` the real run_trial runs, else `script` stands in for it."""
+        argv = list(args)
+        if "--config" not in argv:
+            argv += ["--config", self.config_path(**(over or {}))]
+        if results and "--results-dir" not in argv:
+            argv += ["--results-dir", str(self.results)]
+        out, err, code = io.StringIO(), io.StringIO(), 0
+        self.last_err = err
+        with contextlib.ExitStack() as stack:
+            if not real:
+                stack.enter_context(mock.patch.object(claude_code, "run_trial", script))
+                stack.enter_context(mock.patch.object(subprocess, "Popen", side_effect=refuse_spawn))
+                stack.enter_context(mock.patch.object(subprocess, "run", side_effect=refuse_spawn))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            try:
+                code = run.main(argv)
+            except SystemExit as e:
+                code = e.code
+        dirs = sorted(self.results.glob("*")) if self.results.is_dir() else []
+        return Result(code, out.getvalue(), err.getvalue(), dirs[-1] if dirs else None)
+
+    def snap(self, res):
+        return json.loads((res.run_dir / "snapshot.json").read_text(encoding="utf-8"))
+
+    def records(self, res):
+        return report.load_records(res.run_dir)
+
+    def stand_in(self, name="bin", **kw):
+        d = self.tmp / name
+        d.mkdir()
+        fake_claude(d, echo_model=True, **kw)
+        return d
+
+    def on_path(self, directory):
+        return mock.patch.dict(os.environ, {"PATH": f"{directory}{os.pathsep}{os.environ['PATH']}"})
+
+    def assertNothingRan(self, res):
+        self.assertEqual(res.code, 2, res.err)
+        self.assertFalse(self.results.exists(), "a results directory was created")
+
+
+class GridTest(RunCase):
+    def test_grid_size_rep_major_order_record_fields_and_the_unscrubbed_binary(self):
+        home = self.tmp / "home"
+        (home / "bin").mkdir(parents=True)
+        stand_in = fake_claude(home / "bin")
+        script = Script()
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{home / 'bin'}{os.pathsep}{os.environ['PATH']}"}):
+            expected_binary = os.path.abspath(stand_in)
+            scrubbed = record.scrubber()(expected_binary)
+            self.assertNotEqual(scrubbed, expected_binary)
+            res = self.go("--n", "2", "--approve-spend", "2", script=script,
+                          over={"trial_budget_usd": 0.25, "trial_timeout_s": 45})
+        self.assertEqual(res.code, 0, res.err)
+        self.assertEqual({c["binary"] for c in script.calls}, {expected_binary})
+        self.assertEqual({c["budget_usd"] for c in script.calls}, {0.25})
+        self.assertEqual({c["timeout"] for c in script.calls}, {45})
+        settings = self.snap(res)["settings"]
+        self.assertEqual((settings["trial_budget_usd"], settings["trial_timeout_s"]), (0.25, 45))
+        stored = self.snap(res)["claude_path"]
+        self.assertTrue(stored.startswith("/HOME/"), stored)
+        self.assertEqual(stored, scrubbed)
+        recs = self.records(res)
+        expected = [(rep, case, model, cond) for rep in (1, 2) for case in CASE_IDS
+                    for model in (SONNET, HAIKU) for cond in CONDITIONS]
+        self.assertEqual(len(expected), 32)
+        self.assertEqual([slot_of(r) for r in recs], expected)
+        self.assertEqual([r["rep"] for r in recs], [1] * 16 + [2] * 16)
+        for r in recs:
+            case, cond, model = r["case_id"], r["condition"]["condition"], r["subject"]["model"]
+            self.assertRegex(r["trial_id"], rf"^{case}-{cond}-{model}-r{r['rep']}-a1-[0-9a-f]{{8}}$")
+            self.assertEqual((r["run_id"], r["attempt"]), (res.run_dir.name, 1))
+        self.assertRegex(res.run_dir.name, r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
+        self.assertEqual(len(re.findall(r"^\[\d+\] ", res.err, re.MULTILINE)), 32)
+
+
+class LoginTest(RunCase):
+    ENTRIES = {"basil": "basil", "skill": "skill", "Chang": "Chang", "crop": "--crop", "m": "-m", "to": "to",
+               "light": "daily light integral"}
+
+    def test_a_login_the_graders_read_is_refused_before_anything_starts(self):
+        for login, entry in self.ENTRIES.items():
+            with self.subTest(login=login), mock.patch.dict(
+                    os.environ, {"USER": login, "LOGNAME": login, "USERNAME": login}):
+                res = self.go("--n", "1", "--approve-spend", "1")
+                self.assertNothingRan(res)
+                self.assertIn(f"'{entry}'", res.err)
+                self.assertIn("LOGNAME=eval USER=eval", res.err)
+
+    def test_other_logins_proceed(self):
+        for login in ("testuser", "eval"):
+            with self.subTest(login=login), mock.patch.dict(
+                    os.environ, {"USER": login, "LOGNAME": login, "USERNAME": login}):
+                shutil.rmtree(self.results, ignore_errors=True)
+                res = self.go("--n", "1", "--approve-spend", "1", script=Script())
+                self.assertEqual(res.code, 0, res.err)
+
+
+class PreflightTest(RunCase):
+    def test_a_missing_fixture_skill_folder_or_claude_exits_2_and_names_it(self):
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        cases_ = {
+            "fixture": (mock.patch.object(run, "FIXTURE_DIR", empty), "51.5_-0.13.json"),
+            "skill folder": (mock.patch.object(claude_code, "SKILL_DIR", self.tmp / "no-skill-here"), "no-skill-here"),
+            "claude": (mock.patch.dict(os.environ, {"PATH": str(empty)}), "`claude` on PATH"),
+        }
+        for name, (patch, named) in cases_.items():
+            with self.subTest(name), patch:
+                res = self.go("--n", "1", "--approve-spend", "1")
+                self.assertNothingRan(res)
+                self.assertIn(named, res.err)
+
+
+class ApprovalTest(RunCase):
+    def test_without_approve_spend_it_prints_the_projection_and_worst_case_and_stops(self):
+        res = self.go("--n", "2")
+        self.assertNothingRan(res)
+        self.assertIn("Projected spend for 32 planned trials: $1.44 (source: defaults)", res.out)
+        self.assertIn("32 x $0.50 = $16.00", res.out)
+
+    def test_a_projection_over_the_cap_is_refused(self):
+        res = self.go("--n", "3", "--approve-spend", "2")
+        self.assertNothingRan(res)
+        self.assertIn("exceeds the cap $2.00", res.err)
+
+    def test_approve_spend_lowers_the_cap_and_never_raises_it(self):
+        self.assertNothingRan(self.go("--n", "2", "--approve-spend", "1"))
+        res = self.go("--n", "2", "--approve-spend", "5", over={"run_budget_usd": 1})
+        self.assertNothingRan(res)
+        self.assertIn("exceeds the cap $1.00", res.err)
+        res = self.go("--n", "3", "--approve-spend", "3", script=Script())
+        self.assertEqual((res.code, self.snap(res)["settings"]["effective_cap_usd"]), (0, 3.0))
+        shutil.rmtree(self.results)
+        res = self.go("--n", "1", "--approve-spend", "5", over={"run_budget_usd": 1}, script=Script())
+        self.assertEqual((res.code, self.snap(res)["settings"]["effective_cap_usd"]), (0, 1))
+
+    def test_a_projection_equal_to_the_cap_is_allowed(self):
+        res = self.go("--n", "2", "--approve-spend", "1.44", script=Script(cost=0.001))
+        self.assertEqual((res.code, self.snap(res)["status"]), (0, "complete"))
+
+    def test_bad_arguments_exit_2_with_nothing_run(self):
+        for flag, value in [("--n", "0"), ("--n", "-1"), ("--n", "1.5"), ("--n", "abc"), ("--approve-spend", "0"),
+                            ("--approve-spend", "-1"), ("--approve-spend", "nan"), ("--approve-spend", "inf"),
+                            ("--approve-spend", "-inf"), ("--approve-spend", "abc")]:
+            args = ("--n", "1", flag, value) if flag != "--n" else ("--approve-spend", "1", flag, value)
+            with self.subTest(flag=flag, value=value):
+                self.assertNothingRan(self.go(*args))
+
+
+class ProjectionSourceTest(RunCase):
+    KEYS = [(m, c) for m in (SONNET, HAIKU) for c in CONDITIONS]
+
+    def scrubbed_claude(self):
+        return record.scrubber()(os.path.abspath(shutil.which("claude")))
+
+    def write_snap(self, run_id, *, status="complete", overrides=None, path="default", priced=10, mean=0.1, raw=None,
+                   models=(SONNET, HAIKU), cost_by_key=None):
+        d = self.results / run_id
+        d.mkdir(parents=True)
+        cost = {m: {c: {"sum": mean * priced, "priced": priced, "mean": mean} for c in CONDITIONS} for m in models}
+        if cost_by_key is not None:
+            cost = cost_by_key
+        snap = {"status": status, "overrides": {} if overrides is None else overrides, "approved_spend_usd": 2,
+                "claude_path": self.scrubbed_claude() if path == "default" else path, "cost_by_key": cost}
+        (d / "snapshot.json").write_text(raw if raw is not None else json.dumps(snap), encoding="utf-8")
+
+    def source(self):
+        res = self.go("--n", "2")
+        self.assertEqual(res.code, 2, res.err)
+        total, source = re.search(r"\$([\d.]+) \(source: ([^)]+)\)", res.out).groups()
+        return total, source
+
+    def test_snapshots_that_do_not_qualify_are_ignored(self):
+        self.write_snap("20261001T000000Z-00000001", status="partial")
+        self.write_snap("20261001T000000Z-00000002", overrides={"n": 3})
+        self.write_snap("20261001T000000Z-00000003", priced=9)
+        self.write_snap("20261001T000000Z-00000004", raw="{not json")
+        self.write_snap("20261001T000000Z-00000005", raw="[1, 2]")
+        self.write_snap("20261001T000000Z-00000006", path="/HOME/other/claude")
+        self.write_snap("20261001T000000Z-00000007", path=None)
+        self.write_snap("20261001T000000Z-00000008", mean=0)
+        (self.results / "20261001T000000Z-00000009").mkdir()
+        self.write_snap("20261001T000000Z-0000000a", cost_by_key="x")
+        self.write_snap("20261001T000000Z-0000000b", cost_by_key={SONNET: "x", HAIKU: {"skill": "x", "no-skill": 3}})
+        self.write_snap("20261001T000000Z-0000000c", cost_by_key={m: {c: {"priced": "10", "mean": 0.1}
+                                                                       for c in CONDITIONS} for m in (SONNET, HAIKU)})
+        self.write_snap("zzz-not-a-run-id")
+        self.assertEqual(self.source(), ("1.44", "defaults"))
+
+    def test_the_newest_qualifying_snapshot_wins_and_an_approved_one_without_n_qualifies(self):
+        self.write_snap("20261001T000000Z-00000001", mean=0.2)
+        self.write_snap("20261002T000000Z-00000002", mean=0.1)
+        self.write_snap("20261003T000000Z-00000003", status="mixed-version", mean=0.9)
+        self.assertEqual(self.source(), ("3.20", "20261002T000000Z-00000002"))
+
+    def test_keys_priced_by_different_snapshots_give_a_mixed_source(self):
+        self.write_snap("20261001T000000Z-00000001", mean=0.2)
+        self.write_snap("20261002T000000Z-00000002", mean=0.1, models=(SONNET,))
+        total, source = self.source()
+        self.assertEqual((total, source), ("4.80", "mixed"))
+
+    def test_a_results_dir_that_does_not_exist_yet_projects_from_the_defaults(self):
+        self.assertEqual(self.source(), ("1.44", "defaults"))
+        self.assertFalse(self.results.exists())
+
+    def test_a_full_run_is_used_only_by_a_run_that_sees_the_same_claude(self):
+        first = self.go("--approve-spend", "8", script=Script())
+        self.assertEqual((first.code, self.snap(first)["overrides"]), (0, {}))
+        self.assertEqual(self.source(), ("1.60", first.run_dir.name))
+        other = self.tmp / "other"
+        other.mkdir()
+        fake_claude(other)
+        with self.on_path(other):
+            self.assertEqual(self.source(), ("1.44", "defaults"))
+
+
+class CapTest(RunCase):
+    CHEAP = {m: {c: 0.001 for c in CONDITIONS} for m in (SONNET, HAIKU)}
+
+    def go_cheap(self, *args, **kw):
+        return self.go(*args, over={"cost_defaults_usd": self.CHEAP}, **kw)
+
+    def test_the_cap_stops_the_run_after_at_most_one_trial_of_overshoot(self):
+        script = Script(cost=0.30)
+        res = self.go_cheap("--n", "2", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"]), (1, "partial", "spend-cap"))
+        self.assertEqual((len(script.calls), len(self.records(res))), (4, 4))
+        self.assertAlmostEqual(snap["spend_usd"], 1.2)
+        self.assertLess(snap["spend_usd"], 1 + 0.30)
+
+    def test_an_unpriced_attempt_is_charged_at_the_trial_cap(self):
+        script = Script(cost=None)
+        res = self.go_cheap("--n", "2", "--approve-spend", "0.5", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["stop_reason"], len(script.calls)), (1, "spend-cap", 1))
+        self.assertEqual((snap["spend_usd"], snap["unpriced"]), (0.0, 1))
+
+    def test_the_cap_is_checked_before_attempt_2(self):
+        script = Script({(1, "london", SONNET, "skill"): ("infra", "ok")}, cost=lambda i, kw: 1.2 if i == 0 else 0.01)
+        res = self.go_cheap("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["stop_reason"], len(script.calls)), (1, "spend-cap", 1))
+        self.assertEqual(self.records(res)[0]["status"], "infra-error")
+
+    def test_an_overshoot_on_the_final_slot_leaves_the_grid_complete(self):
+        script = Script(cost=lambda i, kw: 5.0 if i == 15 else 0.01)
+        res = self.go_cheap("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"], len(script.calls)), (0, "complete", None, 16))
+        self.assertGreater(snap["spend_usd"], 1)
+
+    def test_a_cap_reached_after_the_last_slots_infra_attempt_1_is_partial(self):
+        script = Script({(1, "djibouti", HAIKU, "no-skill"): ("infra", "ok")},
+                        cost=lambda i, kw: 5.0 if i == 15 else 0.01)
+        res = self.go_cheap("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"], len(script.calls)),
+                         (1, "partial", "spend-cap", 16))
+        self.assertEqual((self.records(res)[-1]["status"], self.records(res)[-1]["attempt"]), ("infra-error", 1))
+
+
+class RerunTest(RunCase):
+    def test_only_an_infra_error_is_run_again_and_only_once(self):
+        plan = {(1, "london", SONNET, "skill"): ("infra", "ok"),
+                (1, "london", SONNET, "no-skill"): ("infra", "infra"),
+                (1, "lagos", SONNET, "no-skill"): ("harness",),
+                (1, "lagos", SONNET, "skill"): ("cv",),
+                (1, "bangkok", SONNET, "no-skill"): ("runaway",)}
+        script = Script(plan)
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertEqual((res.code, self.snap(res)["status"]), (0, "complete"))
+        by_slot = {}
+        for r in self.records(res):
+            by_slot.setdefault(slot_of(r), []).append((r["attempt"], r["status"]))
+        self.assertEqual(by_slot[(1, "london", SONNET, "skill")], [(1, "infra-error"), (2, "ok")])
+        self.assertEqual(by_slot[(1, "london", SONNET, "no-skill")], [(1, "infra-error"), (2, "infra-error")])
+        self.assertEqual(by_slot[(1, "lagos", SONNET, "no-skill")], [(1, "harness-error")])
+        self.assertEqual(by_slot[(1, "lagos", SONNET, "skill")], [(1, "contract-violation")])
+        self.assertEqual(by_slot[(1, "bangkok", SONNET, "no-skill")], [(1, "runaway")])
+        self.assertEqual(len(script.calls), 16 + 2)
+        counts = self.snap(res)["counts"]
+        self.assertEqual((counts["reruns"], counts["slots_started"], counts["attempts"]), (2, 16, 18))
+        cost = self.snap(res)["cost_by_key"][SONNET]
+        self.assertEqual((cost["skill"]["priced"], cost["no-skill"]["priced"]), (5, 5))
+        self.assertAlmostEqual(cost["skill"]["sum"], 0.25)
+
+
+class SystemicTest(RunCase):
+    def rec(self, sample, case="bangkok", condition=None):
+        s = SAMPLES[sample]
+        kw = {"case": cases.get(case)[1], "eval_set": EVAL_SET, "model": HAIKU,
+              "condition": condition or s["condition"], "trial_id": "t"}
+        return sample_record(kw, sample)
+
+    def test_systemic_rule_unit_cases(self):
+        self.assertEqual(run.SYSTEMIC, {"1", "1b", "1c", "4b", "5"})
+        stops = {"harness_binary_missing": "1", "skill_ok_bundled_skills_on": "1b", "skill_not_offered": "1c",
+                 "api_404_bad_model": "4b", "replay_missing_model_answers": "5"}
+        for sample, rule in stops.items():
+            with self.subTest(sample=sample):
+                self.assertEqual(run.systemic_rule(self.rec(sample)), rule)
+                self.assertIn(run.systemic_rule(self.rec(sample)), run.SYSTEMIC)
+        for sample in ("api_429_rate_limit", "error_during_execution", "nasa_network_failure", "not_logged_in",
+                       "exit0_null_result", "skill_ok", "runaway_budget", "skill_no_cli_call"):
+            with self.subTest(sample=sample):
+                self.assertNotIn(run.systemic_rule(self.rec(sample)), run.SYSTEMIC)
+
+    def test_a_1d_record_is_read_by_its_raw_rule(self):
+        def conflict(rule):
+            return {"status_rule": "1d", "status_inputs": {"redaction_conflict": {"rule": rule}}}
+        self.assertEqual(run.systemic_rule(conflict("4b")), "4b")
+        self.assertIn(run.systemic_rule(conflict("4b")), run.SYSTEMIC)
+        self.assertNotIn(run.systemic_rule(conflict("11")), run.SYSTEMIC)
+
+    def test_a_subjects_mistyped_coordinates_do_not_stop_the_run(self):
+        rec = self.rec("replay_missing_model_answers", case="lagos")
+        self.assertEqual((rec["status"], rec["status_rule"]), ("ok", "11"))
+        self.assertNotIn(run.systemic_rule(rec), run.SYSTEMIC)
+
+    def test_end_to_end_a_systemic_record_stops_the_run_where_evals_trial_exits_0(self):
+        d = self.stand_in(streams={"skill": "skill_not_offered.jsonl"})
+        with self.on_path(d):
+            res = self.go("--n", "1", "--approve-spend", "1", real=True)
+            snap = self.snap(res)
+            self.assertEqual((res.code, snap["status"], snap["stop_reason"]), (1, "partial", "systemic:1c"))
+            self.assertEqual(len(self.records(res)), 1)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = trial.main(["--adapter", "claude_code", "--case", "bangkok", "--model", SONNET,
+                                   "--condition", "skill", "--timeout", "60", "--out", str(self.tmp / "t.json")])
+            self.assertEqual(code, 0, err.getvalue())
+            self.assertIn("rule 1c", out.getvalue())
+
+    def test_a_rule_5_record_stops_the_run_through_the_loop(self):
+        script = Script({(1, "bangkok", SONNET, "skill"): ("replay",)})
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"], len(script.calls)),
+                         (1, "partial", "systemic:5", 9))
+        self.assertEqual(self.records(res)[-1]["status_rule"], "5")
+
+    def test_r3_is_named_before_the_systemic_rule_when_one_record_trips_both(self):
+        def also_wrong_model(i, kw, rec):
+            rec["subject"]["canonical_models"] = ["claude-opus-5-5"]
+        script = Script({(1, "london", SONNET, "skill"): ("sys",)}, tweak=also_wrong_model)
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertEqual((res.code, self.snap(res)["stop_reason"]), (1, "r3"))
+        self.assertEqual(self.records(res)[0]["status_rule"], "1c")
+
+    def test_a_systemic_rule_or_an_r3_mismatch_on_the_final_record_leaves_the_run_partial(self):
+        res = self.go("--n", "1", "--approve-spend", "1", script=Script({(1, "djibouti", HAIKU, "no-skill"): ("sys",)}))
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
+                         (1, "partial", "systemic:4b", 16))
+
+        def wrong_model(i, kw, rec):
+            if i == 15:
+                rec["subject"]["canonical_models"] = ["claude-opus-5-5"]
+        shutil.rmtree(self.results)
+        res = self.go("--n", "1", "--approve-spend", "1", script=Script(tweak=wrong_model))
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
+                         (1, "partial", "r3", 16))
+
+
+class StreakTest(RunCase):
+    HS = (HAIKU, "skill")
+
+    def test_the_streak_is_named_before_the_cap_when_both_are_reached(self):
+        plan = {(1, case, *self.HS): ("excl",) for case in ("london", "lagos", "bangkok")}
+        script = Script(plan, cost=lambda i, kw: 5.0 if i == 10 else 0.01)
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertEqual((res.code, self.snap(res)["stop_reason"], len(script.calls)),
+                         (1, "streak:claude-haiku-5-5/skill", 11))
+        self.assertGreaterEqual(self.snap(res)["spend_usd"], 1)
+
+    def stop(self, plan, n="1"):
+        script = Script(plan)
+        res = self.go("--n", n, "--approve-spend", "1" if n == "1" else "2", script=script)
+        return res, script, self.snap(res)
+
+    def test_a_streak_confined_to_one_key_stops_before_the_next_attempt_of_any_key(self):
+        plan = {(1, case, HAIKU, "skill"): ("excl",) for case in ("london", "lagos", "bangkok")}
+        res, script, snap = self.stop(plan, n="2")
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"]),
+                         (1, "partial", "streak:claude-haiku-5-5/skill"))
+        self.assertEqual(len(script.calls), 11)
+        self.assertEqual(slot_of(self.records(res)[-1]), (1, "bangkok", HAIKU, "skill"))
+
+    def test_a_runaway_or_a_contract_violation_resets_only_its_own_keys_streak(self):
+        for key, outcome in (((HAIKU, "no-skill"), "runaway"), ((HAIKU, "skill"), "cv")):
+            with self.subTest(outcome=outcome):
+                shutil.rmtree(self.results, ignore_errors=True)
+                plan = {(1, "london", *key): ("excl",), (1, "lagos", *key): ("excl",), (1, "bangkok", *key): (outcome,),
+                        (1, "djibouti", *key): ("excl",), (2, "london", *key): ("excl",)}
+                res, script, snap = self.stop(plan, n="2")
+                self.assertEqual((res.code, snap["status"], len(script.calls)), (0, "complete", 32))
+                self.assertEqual(snap["counts"]["by_status"].get("runaway" if outcome == "runaway"
+                                                                  else "contract-violation"), 1)
+        shutil.rmtree(self.results, ignore_errors=True)
+        plan = {(1, "london", *self.HS): ("excl",), (1, "lagos", *self.HS): ("excl",),
+                (1, "lagos", HAIKU, "no-skill"): ("runaway",), (1, "bangkok", *self.HS): ("excl",)}
+        res, script, snap = self.stop(plan)
+        self.assertEqual(snap["stop_reason"], "streak:claude-haiku-5-5/skill")
+
+    def test_a_streak_stops_the_run_for_any_model_and_condition_even_while_other_keys_pass(self):
+        for model in (SONNET, HAIKU):
+            for condition in CONDITIONS:
+                with self.subTest(model=model, condition=condition):
+                    shutil.rmtree(self.results, ignore_errors=True)
+                    plan = {(1, case, model, condition): ("excl",) for case in ("london", "lagos", "bangkok")}
+                    res, script, snap = self.stop(plan)
+                    self.assertEqual((res.code, snap["status"], snap["stop_reason"]),
+                                     (1, "partial", f"streak:{model}/{condition}"))
+
+    def test_a_logged_out_cli_in_the_no_skill_condition_stops_on_the_streak(self):
+        res, script, snap = self.stop({(1, case, SONNET, "no-skill"): ("loggedout",) for case in CASE_IDS})
+        self.assertEqual((res.code, snap["stop_reason"], len(script.calls)),
+                         (1, "streak:claude-sonnet-5-5/no-skill", 10))
+        self.assertEqual({r["status_rule"] for r in self.records(res) if r["status"] == "harness-error"}, {"8"})
+
+    def test_four_keys_that_all_fail_non_systemically_stop_on_the_ninth_trial(self):
+        script = Script(default="excl")
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertEqual((res.code, self.snap(res)["stop_reason"], len(script.calls)),
+                         (1, "streak:claude-sonnet-5-5/skill", 9))
+
+    def test_an_ok_of_the_same_key_resets_the_streak(self):
+        plan = {(1, "london", *self.HS): ("excl",), (1, "lagos", *self.HS): ("excl",),
+                (1, "djibouti", *self.HS): ("excl",), (2, "london", *self.HS): ("excl",)}
+        res, script, snap = self.stop(plan, n="2")
+        self.assertEqual((res.code, snap["status"], len(script.calls)), (0, "complete", 32))
+
+    def test_a_recurred_infra_counts_as_excluded(self):
+        plan = {(1, case, *self.HS): ("infra", "infra") for case in ("london", "lagos", "bangkok")}
+        res, script, snap = self.stop(plan, n="2")
+        self.assertEqual(snap["stop_reason"], "streak:claude-haiku-5-5/skill")
+        last = self.records(res)[-1]
+        self.assertEqual((slot_of(last), last["attempt"], last["status"]), ((1, "bangkok", *self.HS), 2, "infra-error"))
+
+    def test_an_attempt_1_infra_followed_by_an_ok_leaves_the_counter_untouched(self):
+        plan = {(1, "london", *self.HS): ("excl",), (1, "lagos", *self.HS): ("excl",),
+                (1, "bangkok", *self.HS): ("infra", "ok"), (1, "djibouti", *self.HS): ("excl",)}
+        res, script, snap = self.stop(plan)
+        self.assertEqual((res.code, snap["status"], len(script.calls)), (0, "complete", 17))
+
+    def test_three_excluded_slots_ending_on_the_final_slot_leave_the_grid_complete(self):
+        plan = {(1, case, HAIKU, "no-skill"): ("excl",) for case in ("lagos", "bangkok", "djibouti")}
+        res, script, snap = self.stop(plan)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"], len(script.calls)), (0, "complete", None, 16))
+        self.assertEqual(snap["counts"]["by_status"], {"harness-error": 3, "ok": 13})
+
+
+class R3Test(RunCase):
+    def test_haiku_streams_under_a_sonnet_first_config_stop_the_run(self):
+        d = self.tmp / "plain"
+        d.mkdir()
+        fake_claude(d, stream="skill_ok.jsonl")
+        with self.on_path(d):
+            res = self.go("--n", "1", "--approve-spend", "1", real=True)
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["stop_reason"]), (1, "partial", "r3"))
+        self.assertEqual(len(self.records(res)), 1)
+        self.assertIn("R3 stop", res.err)
+
+    def test_an_ok_record_that_reports_no_model_also_stops(self):
+        def no_model(i, kw, rec):
+            rec["subject"]["canonical_models"], rec["subject"]["canonical_model"] = [], None
+        script = Script(tweak=no_model)
+        res = self.go("--n", "1", "--approve-spend", "1", script=script)
+        self.assertEqual((res.code, self.snap(res)["stop_reason"], len(script.calls)), (1, "r3", 1))
+
+
+class SnapshotTest(RunCase):
+    TOP = {"run_id", "status", "stop_reason", "started_utc", "finished_utc", "overrides", "approved_spend_usd",
+           "claude_path", "config_sha256", "settings", "eval_set_version", "eval_set_sha256", "subjects", "judge",
+           "fixture_accessed", "cli_versions", "skill_sha256s", "counts", "spend_usd", "unpriced", "projection",
+           "cost_by_key", "report"}
+
+    def test_fields_report_and_cost_by_key(self):
+        cfg_path = self.config_path()
+        costs = {(SONNET, "skill"): 0.05, (SONNET, "no-skill"): 0.02, (HAIKU, "skill"): 0.04, (HAIKU, "no-skill"): 0.03}
+
+        def cost(i, kw):
+            unpriced = kw["case"]["id"] == "london" and "-r1-" in kw["trial_id"] and kw["model"] == HAIKU
+            return None if unpriced and kw["condition"] == "no-skill" else costs[(kw["model"], kw["condition"])]
+        script = Script(cost=cost)
+        res = self.go("--n", "2", "--approve-spend", "2", "--config", cfg_path, script=script)
+        snap = self.snap(res)
+        self.assertEqual(set(snap), self.TOP)
+        self.assertEqual((snap["status"], snap["stop_reason"], snap["run_id"]), ("complete", None, res.run_dir.name))
+        for key in ("started_utc", "finished_utc"):
+            self.assertRegex(snap[key], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual((snap["overrides"], snap["approved_spend_usd"]), ({"n": 2}, 2.0))
+        self.assertEqual(snap["claude_path"], record.scrubber()(os.path.abspath(shutil.which("claude"))))
+        self.assertEqual(snap["config_sha256"], hashlib.sha256(Path(cfg_path).read_bytes()).hexdigest())
+        self.assertEqual((snap["eval_set_version"], snap["eval_set_sha256"]), ("1", EVAL_SET["sha256"]))
+        self.assertEqual((snap["subjects"], snap["judge"]), ([SONNET, HAIKU], "claude-opus-5-5"))
+        self.assertRegex(snap["fixture_accessed"], r"^\d{4}-\d\d-\d\d$")
+        self.assertEqual((snap["cli_versions"], snap["skill_sha256s"]), (["9.9.9"], ["0" * 64]))
+        self.assertEqual(snap["counts"], {"planned_slots": 32, "slots_started": 32, "attempts": 32, "reruns": 0,
+                                          "by_status": {"ok": 32}})
+        self.assertEqual((snap["unpriced"], round(snap["spend_usd"], 6)), (1, round(0.4 + 0.16 + 0.32 + 0.21, 6)))
+        self.assertEqual(snap["settings"]["n_trials"], 2)
+        self.assertEqual(snap["projection"]["total_usd"], 1.44)
+        self.assertEqual(snap["projection"]["source"], "defaults")
+        self.assertEqual(snap["cost_by_key"][SONNET]["skill"], {"sum": 0.4, "priced": 8, "mean": 0.05})
+        self.assertEqual(snap["cost_by_key"][HAIKU]["skill"], {"sum": 0.32, "priced": 8, "mean": 0.04})
+        self.assertEqual(snap["cost_by_key"][HAIKU]["no-skill"], {"sum": 0.21, "priced": 7, "mean": 0.03})
+        recs = self.records(res)
+        expected = report.build_report(recs, EVAL_SET, 7, 200)
+        self.assertEqual(snap["report"], json.loads(json.dumps(expected)))
+        text = (res.run_dir / "snapshot.json").read_text(encoding="utf-8")
+        self.assertRegex(text, r'(?m)^  "status": "complete",$')
+        self.assertRegex(text, r'(?m)^  "claude_path": ".*/claude",$')
+
+    def test_cost_by_key_stores_the_mean_to_six_decimals(self):
+        res = self.go("--n", "2", "--approve-spend", "2", script=Script(cost=0.012345))
+        self.assertEqual(self.snap(res)["cost_by_key"][SONNET]["skill"],
+                         {"sum": 0.09876, "priced": 8, "mean": 0.012345})
+
+    def test_the_fixture_date_comes_from_the_line_source_md_writes(self):
+        rows = [{"site": "london", "lat": 51.5, "lon": -0.13, "file": "51.5_-0.13.json", "service": "POWER x",
+                 "version": "v1", "period": "p"}]
+        self.assertEqual(snapshot.parse_fixture_date(record_fixtures.source_md(rows, "2031-02-03")), "2031-02-03")
+        self.assertIsNone(snapshot.parse_fixture_date("# no accessed line\n"))
+        self.assertIsNone(snapshot.fixture_date(self.tmp / "missing.md"))
+        bare = self.tmp / "fixtures"
+        shutil.copytree(run.FIXTURE_DIR, bare, ignore=shutil.ignore_patterns("*.md"))
+        with mock.patch.object(run, "FIXTURE_DIR", bare):
+            res = self.go("--n", "1", "--approve-spend", "1", script=Script())
+        self.assertEqual((res.code, self.snap(res)["fixture_accessed"]), (0, None))
+
+    def test_trials_jsonl_is_one_json_object_per_line_even_with_a_lone_surrogate_and_u2028(self):
+        answer = "lone \ud800 and \u2028 and \u00e9"
+
+        def odd_answer(i, kw, rec):
+            rec["output"]["answer"] = answer
+        res = self.go("--n", "1", "--approve-spend", "1", script=Script(tweak=odd_answer))
+        raw = (res.run_dir / "trials.jsonl").read_bytes()
+        text = raw.decode("utf-8")
+        self.assertEqual(res.code, 0, res.err)
+        self.assertNotIn("\u2028", text)
+        self.assertTrue(text.isascii())
+        self.assertEqual(len(text.splitlines()), 16)
+        self.assertTrue(text.endswith("\n"))
+        recs = self.records(res)
+        self.assertEqual({r["output"]["answer"] for r in recs}, {answer})
+        self.assertEqual(len(recs), 16)
+
+    def test_each_record_is_on_disk_before_the_next_attempt_starts(self):
+        written = []
+
+        def lines_on_disk(i, kw, rec):
+            (run_dir,) = self.results.iterdir()
+            written.append((i, (run_dir / "trials.jsonl").read_text(encoding="utf-8").count("\n")))
+        res = self.go("--n", "1", "--approve-spend", "1", script=Script(tweak=lines_on_disk))
+        self.assertEqual(res.code, 0, res.err)
+        self.assertEqual(written, [(i, i) for i in range(16)])
+
+    def test_approve_spend_alone_is_not_an_override_but_n_is(self):
+        res = self.go("--approve-spend", "8", script=Script())
+        self.assertEqual((self.snap(res)["overrides"], self.snap(res)["settings"]["n_trials"]), ({}, 10))
+        shutil.rmtree(self.results)
+        res = self.go("--n", "1", "--approve-spend", "8", script=Script())
+        self.assertEqual(self.snap(res)["overrides"], {"n": 1})
+
+    def test_zero_records_give_a_null_report_and_a_summary_that_says_so(self):
+        for error in (RuntimeError, KeyboardInterrupt):
+            with self.subTest(error=error.__name__):
+                shutil.rmtree(self.results, ignore_errors=True)
+                with self.assertRaises(error):
+                    self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=0, error=error))
+                res = Result(None, "", "", sorted(self.results.glob("*"))[-1])
+                snap = self.snap(res)
+                self.assertIsNone(snap["report"])
+                self.assertEqual((snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
+                                 ("partial", f"error:{error.__name__}", 0))
+                self.assertIn("No trial records.", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
+
+    def test_an_unexpected_exception_or_an_interrupt_writes_a_partial_snapshot_and_propagates(self):
+        for error in (RuntimeError, KeyboardInterrupt):
+            with self.subTest(error=error.__name__):
+                shutil.rmtree(self.results, ignore_errors=True)
+                with self.assertRaises(error):
+                    self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=2, error=error))
+                res = Result(None, "", "", sorted(self.results.glob("*"))[-1])
+                snap = self.snap(res)
+                self.assertEqual((snap["status"], snap["stop_reason"], snap["counts"]["attempts"]),
+                                 ("partial", f"error:{error.__name__}", 2))
+                self.assertEqual(len(self.records(res)), 2)
+                summary = (res.run_dir / "summary.md").read_text(encoding="utf-8")
+                self.assertIn("slots started 2 of 16 planned", summary)
+
+    def test_a_failing_summary_does_not_replace_the_exception_that_stopped_the_run(self):
+        with mock.patch.object(report, "format_report", side_effect=ValueError("fmt")):
+            with self.assertRaises(RuntimeError):
+                self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=2))
+        res = Result(None, "", "", sorted(self.results.glob("*"))[-1])
+        self.assertEqual(self.snap(res)["stop_reason"], "error:RuntimeError")
+        self.assertIn("summary failed: ValueError: fmt", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
+        self.assertIn("summary failed: ValueError: fmt\n", self.last_err.getvalue())
+
+    def test_a_failing_snapshot_does_not_replace_the_exception_that_stopped_the_run(self):
+        with mock.patch.object(snapshot, "build_snapshot", side_effect=ValueError("snap")):
+            with self.assertRaises(RuntimeError):
+                self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=2))
+        self.assertEqual(self.last_err.getvalue().count("snapshot failed: ValueError: snap\n"), 1)
+
+    def test_a_failing_snapshot_on_a_run_that_stopped_cleanly_still_raises(self):
+        with mock.patch.object(snapshot, "build_snapshot", side_effect=ValueError("snap")):
+            with self.assertRaises(ValueError):
+                self.go("--n", "1", "--approve-spend", "1", script=Script())
+
+    def test_a_failing_summary_is_visible_on_stderr_and_does_not_change_the_exit(self):
+        with mock.patch.object(report, "format_report", side_effect=ValueError("fmt")):
+            res = self.go("--n", "1", "--approve-spend", "1", script=Script())
+        self.assertEqual(res.code, 0)
+        self.assertIn("summary failed: ValueError: fmt\n", res.err)
+
+    def test_a_failing_report_build_is_recorded_and_does_not_lose_the_snapshot(self):
+        with mock.patch.object(report, "build_report", side_effect=ValueError("bad")):
+            res = self.go("--n", "1", "--approve-spend", "1", script=Script())
+        snap = self.snap(res)
+        self.assertEqual((res.code, snap["status"], snap["report"], snap["report_error"]),
+                         (0, "complete", None, "ValueError: bad"))
+        self.assertIn("Report failed: ValueError: bad", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
+
+    def test_the_summary_holds_the_report_in_a_fenced_block(self):
+        res = self.go("--n", "1", "--approve-spend", "1", script=Script())
+        summary = (res.run_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertEqual(summary.count("```"), 2)
+        self.assertRegex(summary, r"(?s)```\nEval report\..*judge: not run \(E5\)\n```")
+
+    def test_a_cost_that_is_not_a_finite_non_negative_number_is_unpriced_and_charged_at_the_cap(self):
+        for cost in (None, float("nan"), float("inf"), -0.01, True, "0.05"):
+            with self.subTest(cost=cost):
+                rec = {"usage": {"cost_usd": cost}}
+                self.assertIsNone(snapshot.attempt_cost(rec))
+                self.assertEqual(snapshot.charged([rec], 0.5), 0.5)
+        self.assertEqual(snapshot.attempt_cost({"usage": {"cost_usd": 0}}), 0)
+
+
+class BootstrapConfigTest(RunCase):
+    def test_stats_defaults_equal_the_committed_configs_values(self):
+        cfg = config.load()
+        self.assertEqual((stats.DEFAULT_SEED, stats.DEFAULT_RESAMPLES),
+                         (cfg["bootstrap_seed"], cfg["bootstrap_resamples"]))
+
+    def test_the_snapshot_uses_the_configs_seed_and_resamples(self):
+        plan = {(rep, case, model, "skill"): ("ok",) if (rep + len(case)) % 2 else ("excl",)
+                for rep in (1, 2) for case in CASE_IDS for model in (SONNET, HAIKU)}
+        res = self.go("--n", "2", "--approve-spend", "2", over={"bootstrap_seed": 7, "bootstrap_resamples": 200,
+                                                                 "max_consecutive_excluded": 99}, script=Script(plan))
+        snap = self.snap(res)
+        self.assertEqual(snap["report"]["bootstrap"], {"seed": 7, "resamples": 200})
+        recs = self.records(res)
+        self.assertEqual(snap["report"], json.loads(json.dumps(report.build_report(recs, EVAL_SET, 7, 200))))
+
+
+class ModuleTest(unittest.TestCase):
+    def test_gitignore_and_the_default_results_dir(self):
+        self.assertIn("evals/results/", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
+        self.assertEqual(REAL_RESULTS_DIR, ROOT / "evals" / "results")
+        with tempfile.TemporaryDirectory() as elsewhere:
+            proc = subprocess.run([sys.executable, "-c", "from evals import run; print(run.DEFAULT_RESULTS_DIR)"],
+                                  cwd=elsewhere, env={**os.environ, "PYTHONPATH": str(ROOT)},
+                                  capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.stdout.strip(), str(ROOT / "evals" / "results"), proc.stderr)
+
+    def test_the_new_modules_are_covered_by_the_import_check(self):
+        proc, imported = _import_all(ROOT)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(imported["calls"], [])
+        self.assertTrue({"evals.run", "evals.snapshot"} <= set(imported["modules"]))
+
+
+class StandInTest(unittest.TestCase):
+    def run_stand_in(self, directory, *args):
+        return subprocess.run([str(Path(directory) / "claude"), *args], capture_output=True, text=True, timeout=60)
+
+    def test_echo_model_rewrites_the_model_and_picks_the_stream_by_the_tools_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake_claude(d, echo_model=True)
+            skill = self.run_stand_in(d, "-p", "x", "--model", "claude-sonnet-5-5", "--tools", "Bash,Read,Skill")
+            plain = self.run_stand_in(d, "-p", "x", "--model", "claude-sonnet-5-5", "--tools", "")
+            self.assertEqual(self.run_stand_in(d, "--version").stdout.split()[0], "9.9.9")
+        self.assertIn("claude-sonnet-5-5", skill.stdout)
+        self.assertNotIn("claude-haiku-5-5", skill.stdout + plain.stdout)
+        self.assertEqual(plain.stdout, (SAMPLES_DIR / ECHO_STREAMS["no-skill"]).read_text(encoding="utf-8")
+                         .replace("claude-haiku-5-5", "claude-sonnet-5-5"))
+        self.assertIn("Skill", skill.stdout)
+
+    def test_streams_can_be_overridden_per_test(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake_claude(d, echo_model=True, streams={"skill": "skill_not_offered.jsonl"})
+            out = self.run_stand_in(d, "-p", "x", "--model", HAIKU, "--tools", "Bash,Read,Skill").stdout
+        self.assertEqual(out, (SAMPLES_DIR / "skill_not_offered.jsonl").read_text(encoding="utf-8"))
+
+    def test_the_module_entry_writes_an_executable_stand_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            proc = subprocess.run([sys.executable, "-m", "tests.fake_claude", d], cwd=ROOT, capture_output=True,
+                                  text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), str(Path(d) / "claude"))
+            self.assertTrue(os.access(Path(d) / "claude", os.X_OK))
+
+
+class SubprocessRunTest(unittest.TestCase):
+    def test_a_full_run_against_the_stand_in_writes_all_three_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "bin").mkdir()
+            fake_claude(d / "bin", echo_model=True)
+            env = {**os.environ, "PATH": f"{d / 'bin'}{os.pathsep}{os.environ['PATH']}"}
+            try:
+                proc = subprocess.run([sys.executable, "-m", "evals.run", "--n", "2", "--approve-spend", "2",
+                                       "--results-dir", str(d / "results")], cwd=ROOT, env=env,
+                                      capture_output=True, text=True, timeout=DEADLINE)
+            except subprocess.TimeoutExpired:
+                self.fail(f"evals.run did not finish within {DEADLINE}s")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            (run_dir,) = (d / "results").iterdir()
+            self.assertEqual(sorted(p.name for p in run_dir.iterdir()), ["snapshot.json", "summary.md", "trials.jsonl"])
+            self.assertEqual(len(report.load_records(run_dir)), 32)
+            self.assertEqual(len(re.findall(r"^\[\d+\] ", proc.stderr, re.MULTILINE)), 32)
+            for line in re.findall(r"^\[\d+\] .*$", proc.stderr, re.MULTILINE):
+                self.assertRegex(line, r"^\[\d+\] \w+ claude-\w+-5-5 [\w-]+ r\d a\d: ok \(rule 11\) "
+                                       r"cost \$[\d.]+, spend \$[\d.]+$")
+            header = (run_dir / "summary.md").read_text(encoding="utf-8").split("```")[0]
+            for needle in ("complete", "slots started 32 of 32 planned", "(source: defaults)"):
+                self.assertIn(needle, header)
+            snap = json.loads((run_dir / "snapshot.json").read_text(encoding="utf-8"))
+            self.assertEqual((snap["status"], snap["counts"]["slots_started"]), ("complete", 32))
+            self.assertTrue(snap["claude_path"].endswith("/claude"))
+            self.assertFalse(Path(_state["log"]).exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

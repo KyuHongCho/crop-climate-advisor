@@ -75,6 +75,59 @@ class ConfigTest(unittest.TestCase):
                 config.check_canonical("claude-sonnet-5-5", ran)
 
 
+RUN_KEYS = {"n_trials": 10, "run_budget_usd": 30, "max_consecutive_excluded": 3, "projection_min_trials": 10,
+            "bootstrap_seed": 20260101, "bootstrap_resamples": 10000}
+
+
+def _run_cfg(**over):
+    cfg = {"subjects": ["claude-sonnet-5-5", "claude-haiku-5-5"], "judge": "claude-opus-5-5", **LIMITS,
+           **RUN_KEYS, "cost_defaults_usd": {m: {"skill": 0.06, "no-skill": 0.03}
+                                              for m in ("claude-sonnet-5-5", "claude-haiku-5-5")}}
+    cfg.update(over)
+    return cfg
+
+
+class RunSettingsTest(unittest.TestCase):
+    def test_the_committed_config_pins_the_run_settings_and_the_default_cost_structure(self):
+        cfg = config.load()
+        settings = config.run_settings(cfg)
+        for key, value in RUN_KEYS.items():
+            self.assertEqual(settings[key], value, key)
+        self.assertEqual({m: sorted(c) for m, c in settings["cost_defaults_usd"].items()},
+                         {m: ["no-skill", "skill"] for m in cfg["subjects"]})
+
+    def test_a_valid_config_passes_and_load_ignores_the_run_keys(self):
+        self.assertEqual(config.run_settings(_run_cfg())["n_trials"], 10)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(config.load(_write(d, {k: v for k, v in _run_cfg().items() if k not in RUN_KEYS})
+                                         )["judge"], "claude-opus-5-5")
+
+    def test_a_missing_or_bad_run_key_is_refused(self):
+        bad = [{k: v for k, v in _run_cfg().items() if k != key} for key in (*RUN_KEYS, "cost_defaults_usd")]
+        for key in ("n_trials", "max_consecutive_excluded", "projection_min_trials", "bootstrap_resamples"):
+            bad += [_run_cfg(**{key: v}) for v in (0, -1, 1.5, True, "3", None)]
+        bad += [_run_cfg(run_budget_usd=v) for v in (0, -1, True, "30", float("inf"), float("nan"))]
+        bad += [_run_cfg(bootstrap_seed=v) for v in (1.5, True, "7", None)]
+        bad.append(_run_cfg(cost_defaults_usd=[]))
+        for cfg in bad:
+            with self.subTest(cfg={k: cfg.get(k) for k in RUN_KEYS}), self.assertRaises(config.ConfigError):
+                config.run_settings(cfg)
+
+    def test_a_missing_or_bad_cost_default_for_any_subject_or_condition_is_refused(self):
+        full = _run_cfg()["cost_defaults_usd"]
+        bad = [{"claude-haiku-5-5": full["claude-haiku-5-5"]}, {"claude-sonnet-5-5": full["claude-sonnet-5-5"]}]
+        for model in full:
+            for condition in ("skill", "no-skill"):
+                without = {m: dict(c) for m, c in full.items()}
+                del without[model][condition]
+                bad.append(without)
+                for value in (0, -0.01, True, "0.06", None, float("nan")):
+                    bad.append({m: {**c, **({condition: value} if m == model else {})} for m, c in full.items()})
+        for defaults in bad:
+            with self.subTest(defaults=defaults), self.assertRaises(config.ConfigError):
+                config.run_settings(_run_cfg(cost_defaults_usd=defaults))
+
+
 class CasesTest(unittest.TestCase):
     def test_every_case_carries_its_recorded_sites_exact_coordinates(self):
         data = cases.load()

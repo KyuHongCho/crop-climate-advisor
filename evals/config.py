@@ -3,6 +3,8 @@ import json
 import math
 from pathlib import Path
 
+from .adapters.claude_code import CONDITIONS
+
 DEFAULT_PATH = Path(__file__).resolve().parent / "config.json"
 
 
@@ -49,6 +51,36 @@ def positive_number(value) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
     except OverflowError:  # a JSON integer too large for a float
         return False
+
+
+def _positive_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+_RUN_INTS = ("n_trials", "max_consecutive_excluded", "projection_min_trials", "bootstrap_resamples")
+
+
+def run_settings(cfg: dict) -> dict:
+    """The run loop's settings from a loaded config, each checked; `load` itself does not read them."""
+    problems = [f"{k!r} must be a positive integer" for k in _RUN_INTS if not _positive_int(cfg.get(k))]
+    if not positive_number(cfg.get("run_budget_usd")):
+        problems.append("'run_budget_usd' must be a finite number greater than 0")
+    seed = cfg.get("bootstrap_seed")
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        problems.append("'bootstrap_seed' must be an integer")
+    defaults = cfg.get("cost_defaults_usd")
+    if not isinstance(defaults, dict):
+        problems.append("'cost_defaults_usd' must be an object of {model: {condition: usd}}")
+    else:
+        for model in cfg["subjects"]:
+            by_condition = defaults.get(model)
+            for condition in CONDITIONS:
+                if not isinstance(by_condition, dict) or not positive_number(by_condition.get(condition)):
+                    problems.append(f"'cost_defaults_usd' needs a positive number for {model} / {condition}")
+    if problems:
+        raise ConfigError("; ".join(problems))
+    keys = (*_RUN_INTS, "run_budget_usd", "bootstrap_seed", "cost_defaults_usd")
+    return {k: cfg[k] for k in keys}
 
 
 def check_canonical(configured: str, canonical_models, require_model: bool = False) -> None:

@@ -16,7 +16,7 @@ tool — built as real, working code with transparently reported status.
 > disagreeing published claims rather than one (the other six show their FAO ECOCROP claim only) —
 > and the NASA POWER climate lookup is exposed as an **MCP server**. The **Agent Skill** is written,
 > and one eval trial at a time runs through it, but only four deterministic checks score how that
-> disagreement is handled yet (no model judge, no repeated runs), and the RAG layer is **not built**.
+> disagreement is handled yet (no model judge; a repeated-run harness with spend caps exists, but no measured run has been made yet), and the RAG layer is **not built**.
 > See [What works / What's planned](#what-works--whats-planned).
 > This README describes only what actually runs; planned work is labelled as such.
 
@@ -30,7 +30,7 @@ tool — built as real, working code with transparently reported status.
 | ✅ | CLI + offline unit tests | **working** |
 | ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
 | ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — for basil only (journal claims are attached to ECOCROP id 1547; the other crops show the ECOCROP claim alone) the CLI prints all three and derives from their intersection that no single window satisfies them all; for the queried location it also reports where that location falls relative to each claim, flags it when the sources point in opposite directions there, and prints a conservative read that never calls a site optimal unless every source does |
-| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | **partly built** — one trial per command, with or without the Skill, writes a record with a status (see [The Agent Skill](#the-agent-skill)), and `python -m evals.score` grades that record with four deterministic checks; `python -m evals.report` summarises run-loop records per cell, but nothing writes those yet; no model judge or repeated runs yet |
+| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | **partly built** — one trial per command, with or without the Skill, writes a record with a status (see [The Agent Skill](#the-agent-skill)), and `python -m evals.score` grades that record with four deterministic checks; `python -m evals.run` repeats trials across the grid with a spend cap and writes `trials.jsonl`, `snapshot.json` and `summary.md`, and `python -m evals.report` summarises them; deterministic checks only, no model judge or measured run yet |
 | ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
 | ✅ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | **written** — `.agents/skills/crop-suitability/`; Claude Code invokes it and runs the CLI, but whether it improves the answers is not yet measured |
 
@@ -185,8 +185,9 @@ crop_advisor/           # the app: climate.py, ecocrop.py, suitability.py, cli.p
                         #          mcp_server.py (MCP wrapper around the climate call)
 data/ecocrop/           # bundled, scraped-once crop requirements (JSON)
 scripts/scrape_ecocrop.py   # one-time ECOCROP scraper
-evals/                  # model-behaviour eval: trial.py, adapters/claude_code.py, status.py, record.py,
-                        #   cases.json, config.json, record_fixtures.py, fixtures/nasa_power/ (replayed climate)
+evals/                  # model-behaviour eval: trial.py, run.py, snapshot.py, adapters/claude_code.py, status.py,
+                        #   record.py, cases.json, config.json, record_fixtures.py, fixtures/nasa_power/ (replayed
+                        #   climate), results/ (run output, gitignored)
 .agents/skills/crop-suitability/   # the Agent Skill: SKILL.md + reference/
 tests/                  # offline unit tests (+ one opt-in live NASA POWER test)
 ```
@@ -283,3 +284,31 @@ trial refuses to run and records `harness-error` when any of these exist:
 
 Move or rename those files while you run trials, then put them back. Pointing `CLAUDE_CONFIG_DIR` at
 an empty folder logs `claude` out; whether adding `CLAUDE_CODE_OAUTH_TOKEN` gets past that is untested.
+
+## Run
+
+```bash
+python -m evals.run --n 3 --approve-spend 3
+```
+
+runs every case x model x condition `--n` times (default: `n_trials` in `evals/config.json`), one rep after
+another, and **spends real money**: each trial is capped at `trial_budget_usd`, and the run at the lower of
+`run_budget_usd` and `--approve-spend`. Both caps are soft; a trial or the run can overshoot by one turn or one
+trial. `--approve-spend USD` is required and is a guard against accidents, not an approval: without it the command
+prints the projected cost and the worst case and exits 2 (it also exits 2 when the projection exceeds the cap).
+A run with `--n` is a pilot.
+
+Each run writes `evals/results/<run-id>/` (gitignored): `trials.jsonl`, one record per attempt; `snapshot.json`;
+and `summary.md`, the run header plus the same report `python -m evals.report <run dir>` prints. An
+`infra-error` is run once more; a second one is excluded.
+
+The run stops, keeps what it has, writes a `partial` snapshot and exits 1 when:
+
+- spend reaches the cap;
+- a trial ends with a setup fault no re-run would fix (`harness-error` under rule 1, 1b, 1c, 4b or 5) or reports
+  a model other than the configured one;
+- three slots in a row are excluded for one model and condition.
+
+Your own instruction files stop the run on its first trial (rule 1). An interrupt (Ctrl-C) or SIGTERM can leave a
+`claude` process running, because the run does not yet stop its child process when it is interrupted; SIGTERM
+also leaves no snapshot.
