@@ -757,6 +757,17 @@ class SnapshotTest(RunCase):
         self.assertIn("summary failed: ValueError: fmt", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
         self.assertIn("summary failed: ValueError: fmt\n", self.last_err.getvalue())
 
+    def test_a_failing_snapshot_does_not_replace_the_exception_that_stopped_the_run(self):
+        with mock.patch.object(snapshot, "build_snapshot", side_effect=ValueError("snap")):
+            with self.assertRaises(RuntimeError):
+                self.go("--n", "1", "--approve-spend", "1", script=Script(error_at=2))
+        self.assertEqual(self.last_err.getvalue().count("snapshot failed: ValueError: snap\n"), 1)
+
+    def test_a_failing_snapshot_on_a_run_that_stopped_cleanly_still_raises(self):
+        with mock.patch.object(snapshot, "build_snapshot", side_effect=ValueError("snap")):
+            with self.assertRaises(ValueError):
+                self.go("--n", "1", "--approve-spend", "1", script=Script())
+
     def test_a_failing_summary_is_visible_on_stderr_and_does_not_change_the_exit(self):
         with mock.patch.object(report, "format_report", side_effect=ValueError("fmt")):
             res = self.go("--n", "1", "--approve-spend", "1", script=Script())

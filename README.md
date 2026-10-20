@@ -310,4 +310,5 @@ The run stops, keeps what it has, writes a `partial` snapshot and exits 1 when:
 - three slots in a row are excluded for one model and condition.
 
 Your own instruction files stop the run on its first trial (rule 1). An interrupt (Ctrl-C) or SIGTERM can leave a
-`claude` process running until the interrupt slice (E3c) lands, and SIGTERM leaves no snapshot.
+`claude` process running, because the run does not yet stop its child process when it is interrupted; SIGTERM
+also leaves no snapshot.

@@ -168,7 +168,7 @@ def main(argv=None) -> int:
 
     effective = {**settings, "n_trials": n, "trial_budget_usd": cfg["trial_budget_usd"],
                  "trial_timeout_s": cfg["trial_timeout_s"], "effective_cap_usd": cap}
-    started, records, stop = snapshot.utc_now(), [], None
+    started, records, stop, failed = snapshot.utc_now(), [], None, False
     print(f"run {run_id}: {planned} planned trials, projected ${projection['total_usd']:.2f}, "
           f"cap ${cap:.2f} -> {run_dir}", file=sys.stderr)
     try:
@@ -177,24 +177,29 @@ def main(argv=None) -> int:
                          trial_budget_usd=cfg["trial_budget_usd"], timeout_s=cfg["trial_timeout_s"], cap=cap,
                          claude_path=claude_path, run_id=run_id, records=records, trials=trials)
     except BaseException as e:
-        stop = f"error:{type(e).__name__}"
+        stop, failed = f"error:{type(e).__name__}", True
         raise
     finally:
-        snap = snapshot.build_snapshot(
-            run_id=run_id, stop_reason=stop, started=started, finished=snapshot.utc_now(),
-            overrides={"n": args.n} if args.n is not None else {}, approved_spend_usd=args.approve_spend,
-            claude_path=scrubbed_path, config_sha256=hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
-            settings=effective, eval_set=eval_set, subjects=subjects, judge=cfg["judge"],
-            fixture_accessed=snapshot.fixture_date(FIXTURE_DIR / "SOURCE.md"), planned_slots=planned,
-            projection=projection, records=records)
-        (run_dir / snapshot.SNAPSHOT_FILE).write_text(json.dumps(snap, indent=2) + "\n", encoding="utf-8")
         try:
-            summary = snapshot.format_summary(snap)
-        except Exception as e:  # noqa: BLE001 - must not replace the exception that stopped the run
-            failure = f"summary failed: {type(e).__name__}: {e}"
-            print(failure, file=sys.stderr)
-            summary = f"# Eval run {run_id}\n\n{failure}\n"
-        (run_dir / snapshot.SUMMARY_FILE).write_text(summary, encoding="utf-8")
+            snap = snapshot.build_snapshot(
+                run_id=run_id, stop_reason=stop, started=started, finished=snapshot.utc_now(),
+                overrides={"n": args.n} if args.n is not None else {}, approved_spend_usd=args.approve_spend,
+                claude_path=scrubbed_path, config_sha256=hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
+                settings=effective, eval_set=eval_set, subjects=subjects, judge=cfg["judge"],
+                fixture_accessed=snapshot.fixture_date(FIXTURE_DIR / "SOURCE.md"), planned_slots=planned,
+                projection=projection, records=records)
+            (run_dir / snapshot.SNAPSHOT_FILE).write_text(json.dumps(snap, indent=2) + "\n", encoding="utf-8")
+            try:
+                summary = snapshot.format_summary(snap)
+            except Exception as e:  # noqa: BLE001 - must not replace the exception that stopped the run
+                failure = f"summary failed: {type(e).__name__}: {e}"
+                print(failure, file=sys.stderr)
+                summary = f"# Eval run {run_id}\n\n{failure}\n"
+            (run_dir / snapshot.SUMMARY_FILE).write_text(summary, encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 - keep the exception that stopped the run
+            if not failed:
+                raise
+            print(f"snapshot failed: {type(e).__name__}: {e}", file=sys.stderr)
     print(f"{snap['status']} ({stop or 'all slots run'}): {run_dir}", file=sys.stderr)
     return 0 if stop is None else 1
 
