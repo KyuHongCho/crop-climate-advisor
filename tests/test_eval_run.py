@@ -1103,6 +1103,54 @@ class InterruptTest(RunCase):
         self.assertEqual((res.code, snap["stop_reason"], snap["report"]), (1, "interrupted", None))
         self.assertIn("No trial records.", (res.run_dir / "summary.md").read_text(encoding="utf-8"))
 
+    def test_a_signal_during_the_record_write_leaves_the_file_and_the_snapshot_in_agreement(self):
+        flushes, masks, real_open, sigint = [], [], open, signal.getsignal(signal.SIGINT)
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        script = Script()
+
+        def scripted(**kw):
+            if script.calls:
+                masks.append(signal.pthread_sigmask(signal.SIG_BLOCK, set()))
+            return script(**kw)
+
+        class Wrapper:
+            def __init__(self, f):
+                self.f = f
+
+            def write(self, text):
+                return self.f.write(text)
+
+            def flush(self):
+                self.f.flush()
+                flushes.append(1)
+                if len(flushes) == 2:
+                    os.kill(os.getpid(), signal.SIGINT)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.f.close()
+                return False
+
+        def fake_open(path, *args, **kwargs):
+            f = real_open(path, *args, **kwargs)
+            return Wrapper(f) if str(path).endswith("trials.jsonl") else f
+        with mock.patch.object(run, "open", fake_open, create=True):
+            res = self.go("--n", "1", "--approve-spend", "1", script=scripted)
+        snap = self.snap(res)
+        on_disk = self.records(res)
+        self.assertTrue(masks)
+        for held in masks:
+            self.assertFalse(held & {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}, held)
+        self.assertEqual(len(masks), 1)
+        self.assertEqual((res.code, snap["stop_reason"]), (1, "interrupted"))
+        self.assertEqual((len(on_disk), snap["counts"]["attempts"]), (2, 2))
+        self.assertTrue(snap["in_flight"] is None or snap["in_flight"]["trial_id"] not in
+                        {r["trial_id"] for r in on_disk})
+        self.assertIs(signal.getsignal(signal.SIGINT), sigint)
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), mask)
+
     def test_a_failing_snapshot_after_an_interrupt_raises(self):
         with mock.patch.object(snapshot, "build_snapshot", side_effect=ValueError("snap")):
             with self.assertRaises(ValueError):

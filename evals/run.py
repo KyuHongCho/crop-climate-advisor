@@ -136,10 +136,15 @@ def _loop(*, eval_set, subjects, n, max_streak, trial_budget_usd, timeout_s, cap
                 state["in_flight"] = None
                 return "version-changed"
             rec.update(run_id=run_id, rep=rep, attempt=attempt)
-            trials.write(json.dumps(rec) + "\n")
-            trials.flush()
-            records.append(rec)
-            state["in_flight"] = None
+            # Held so a signal cannot split the file write from the count; it blocks this thread only, not others.
+            held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
+            try:
+                trials.write(json.dumps(rec) + "\n")
+                trials.flush()
+                records.append(rec)
+                state["in_flight"] = None
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, held)
             baseline = baseline or rec["subject"]["cli_version"]
             _progress(records, rec)
             stop = _after_record(rec, model, skill_hash)

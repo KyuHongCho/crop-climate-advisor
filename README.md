@@ -309,7 +309,7 @@ The run stops, keeps what it has, writes a snapshot and exits 1 when:
   a model other than the configured one;
 - three slots in a row are excluded for one model and condition;
 - the `claude` version or the skill's content changes during the run (the snapshot's status is then
-  `mixed-version` or `mixed-skill`, and such a snapshot is never published);
+  `mixed-version` or `mixed-skill`, and such a snapshot is never used for cost projections);
 - you press Ctrl-C or send SIGTERM or SIGHUP, as when a terminal closes (`stop_reason: interrupted`): the
   `claude` child's process group is killed, and the attempt that was running has no record and is named in the
   snapshot's `in_flight`. Under `nohup` a SIGHUP is ignored and the run goes on.
