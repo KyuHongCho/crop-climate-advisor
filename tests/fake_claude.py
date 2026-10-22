@@ -1,6 +1,7 @@
 """Stand-ins for the `claude` binary, so no test ever reaches the real one.
 
-    python -m tests.fake_claude <dir>    writes an `echo_model` stand-in named `claude` into <dir>
+    python -m tests.fake_claude <dir> [--sleep N] [--bump-version-after K]
+        writes an `echo_model` stand-in named `claude` into <dir>
 """
 import argparse
 import shlex
@@ -19,18 +20,33 @@ def sample_lines(name):
 
 
 def fake_claude(directory, stream=None, exit_code=0, sleep=0, env_dump=None, emit=None, script=None,
-                echo_model=False, streams=None):
+                echo_model=False, streams=None, bump_version_after=None):
     """A stand-in `claude`: answers --version, otherwise prints a stored stream.
 
     With `echo_model` it prints the stream `streams` (default ECHO_STREAMS) names for the condition's --tools value,
     with the stored model id rewritten to --model, so record-time R3 passes for any configured subject.
     """
     path = Path(directory) / "claude"
-    body = ["#!/bin/sh", 'if [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi']
+    body = ["#!/bin/sh"]
+    if bump_version_after is None:
+        body.append('if [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi')
+    else:
+        body += ['if [ "$1" = "--version" ]; then',
+                 '  echo x >> "$0.count"',
+                 f'  if [ $(( $(wc -l < "$0.count") )) -le {int(bump_version_after)} ]; then',
+                 '    echo "9.9.9 (Claude Code)"',
+                 "  else",
+                 '    echo "9.9.10 (Claude Code)"',
+                 "  fi",
+                 "  exit 0",
+                 "fi",
+                 'echo "$$" >> "$0.starts"']
     if env_dump:
         body.append(f'env > "{env_dump}"; pwd >> "{env_dump}"; ls -a >> "{env_dump}"')
     if sleep:
-        body.append(f"sleep {sleep}")
+        # The sleeper's command line carries the stand-in's path, so `pgrep -f` finds it, orphaned or not.
+        sleeper = "import time,sys; time.sleep(float(sys.argv[1]))"
+        body += [f'{shlex.quote(sys.executable)} -I -c \'{sleeper}\' {sleep} "$0" &', 'echo $! > "$0.pid"', "wait"]
     if stream:
         body.append(f'cat "{SAMPLES_DIR / stream}"')
     if echo_model:
@@ -75,9 +91,12 @@ def main(argv=None):
         return serve(argv[1], argv[2], argv[3:])
     ap = argparse.ArgumentParser(description="Write an echo_model stand-in `claude` into a directory.")
     ap.add_argument("directory")
+    ap.add_argument("--sleep", type=float, default=0, metavar="N", help="sleep N seconds in every model call")
+    ap.add_argument("--bump-version-after", type=int, default=None, metavar="K",
+                    help="answer 9.9.10 to --version after the first K calls")
     args = ap.parse_args(argv)
     Path(args.directory).mkdir(parents=True, exist_ok=True)
-    print(fake_claude(args.directory, echo_model=True))
+    print(fake_claude(args.directory, echo_model=True, sleep=args.sleep, bump_version_after=args.bump_version_after))
     return 0
 
 

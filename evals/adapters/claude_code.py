@@ -89,6 +89,10 @@ def environment(replay_dir, base_env=None, python_bin=None):
     return env
 
 
+class VersionChanged(Exception):
+    """The `claude` version differs from the one the run started with."""
+
+
 def cli_version(binary, env, cwd) -> str:
     out = subprocess.run([binary, "--version"], capture_output=True, text=True, env=env, cwd=cwd,
                          stdin=subprocess.DEVNULL, timeout=60, check=True).stdout
@@ -107,19 +111,35 @@ def run(args, cwd, env, timeout):
                             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                             start_new_session=True)
     lines, errs = [], []
-    readers = [threading.Thread(target=_drain, args=(proc.stdout, lines, start), daemon=True),
-               threading.Thread(target=_drain, args=(proc.stderr, errs, start), daemon=True)]
-    for t in readers:
-        t.start()
+    readers = {}
     timed_out = False
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        os.killpg(proc.pid, signals.SIGKILL)
+        for stream, sink in ((proc.stdout, lines), (proc.stderr, errs)):
+            readers[stream] = threading.Thread(target=_drain, args=(stream, sink, start), daemon=True)
+            readers[stream].start()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(proc.pid, signals.SIGKILL)
+            proc.wait()
+        for t in readers.values():
+            t.join(timeout=10)
+    except BaseException:
+        try:
+            os.killpg(proc.pid, signals.SIGKILL)
+        except (ProcessLookupError, PermissionError):  # macOS refuses a group whose leader is an unreaped zombie
+            pass
         proc.wait()
-    for t in readers:
-        t.join(timeout=10)
+        deadline = time.monotonic() + 2
+        for t in readers.values():
+            if t.ident is not None:
+                t.join(timeout=max(0, deadline - time.monotonic()))
+        # close() blocks while a surviving process still feeds the pipe, so only a finished reader's stream is closed.
+        for stream in (proc.stdout, proc.stderr):
+            if not readers.get(stream) or not readers[stream].is_alive():
+                stream.close()
+        raise
     proc.stdout.close()
     proc.stderr.close()
     rc = proc.returncode
@@ -254,7 +274,8 @@ def to_record(*, case, eval_set, trial_id, model, condition, cli_version_, run_r
     )
 
 
-def run_trial(*, case, eval_set, model, condition, budget_usd, timeout, trial_id, binary="claude"):
+def run_trial(*, case, eval_set, model, condition, budget_usd, timeout, trial_id, binary="claude",
+              expected_cli_version=None):
     parsed, run_result, version, failure, workspace, skill_sha = {}, None, None, None, None, None
     with tempfile.TemporaryDirectory(prefix="crop-eval-") as base:
         env = os.environ
@@ -266,8 +287,12 @@ def run_trial(*, case, eval_set, model, condition, budget_usd, timeout, trial_id
             if leaks:
                 raise RuntimeError(f"instruction files would leak into the subject: {', '.join(map(str, leaks))}")
             version = cli_version(binary, env, workspace)
+            if expected_cli_version is not None and version != expected_cli_version:
+                raise VersionChanged(f"{expected_cli_version} -> {version}")
             run_result = run(argv(case["prompt"], model, condition, budget_usd, binary), workspace, env, timeout)
             parsed = parse(run_result["lines"])
+        except VersionChanged:
+            raise
         except Exception as e:  # noqa: BLE001 - any harness fault becomes rule 1, never a lost trial
             failure = f"{type(e).__name__}: {e}"
         identity = dict(case=case, eval_set=eval_set, trial_id=trial_id, model=model, condition=condition,

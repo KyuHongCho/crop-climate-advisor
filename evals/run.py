@@ -10,7 +10,9 @@ import itertools
 import json
 import os
 import shutil
+import signal
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -69,7 +71,29 @@ def _before_attempt(streaks, max_streak, spent, cap):
     return "spend-cap" if spent >= cap else None
 
 
-def _after_record(rec, model):
+def _raise_interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
+def _install_handlers(installed):
+    """Stop on SIGINT, SIGTERM or SIGHUP like a Ctrl-C, recording each replaced handler in `installed`."""
+    handlers = {signal.SIGINT: signal.default_int_handler, signal.SIGTERM: _raise_interrupt}
+    if signal.getsignal(signal.SIGHUP) != signal.SIG_IGN:
+        handlers[signal.SIGHUP] = _raise_interrupt
+    for signum, handler in handlers.items():
+        installed[signum] = signal.signal(signum, handler)
+
+
+def _restore_handlers(installed):
+    for signum, previous in installed.items():
+        if previous is not None:
+            signal.signal(signum, previous)
+
+
+def _after_record(rec, model, skill_hash):
+    seen = rec["condition"].get("skill_sha256")
+    if rec["condition"]["condition"] == "skill" and seen is not None and seen != skill_hash:
+        return "skill-changed"
     try:
         config.check_canonical(model, rec["subject"]["canonical_models"], require_model=rec["status"] == "ok")
     except config.ModelMismatch as e:
@@ -88,9 +112,11 @@ def _progress(records, rec):
           f"cost {cost_text}, spend ${spent:.4f}", file=sys.stderr)
 
 
-def _loop(*, eval_set, subjects, n, max_streak, trial_budget_usd, timeout_s, cap, claude_path, run_id, records, trials):
+def _loop(*, eval_set, subjects, n, max_streak, trial_budget_usd, timeout_s, cap, claude_path, run_id, records, trials,
+          state, skill_hash):
     """Run every slot rep-major; return the first stop reason, or None when the grid finished."""
     streaks = {(m, c): 0 for m in subjects for c in claude_code.CONDITIONS}
+    baseline = None
     for rep, case, model, condition in itertools.product(
             range(1, n + 1), eval_set["cases"], subjects, claude_code.CONDITIONS):
         attempt = 1
@@ -98,16 +124,30 @@ def _loop(*, eval_set, subjects, n, max_streak, trial_budget_usd, timeout_s, cap
             stop = _before_attempt(streaks, max_streak, snapshot.charged(records, trial_budget_usd), cap)
             if stop:
                 return stop
-            rec = claude_code.run_trial(
-                case=case, eval_set=eval_set, model=model, condition=condition, budget_usd=trial_budget_usd,
-                timeout=timeout_s, binary=claude_path,
-                trial_id=f"{case['id']}-{condition}-{model}-r{rep}-a{attempt}-{uuid.uuid4().hex[:8]}")
+            trial_id = f"{case['id']}-{condition}-{model}-r{rep}-a{attempt}-{uuid.uuid4().hex[:8]}"
+            state["in_flight"] = {"case_id": case["id"], "model": model, "condition": condition, "rep": rep,
+                                  "attempt": attempt, "trial_id": trial_id}
+            try:
+                rec = claude_code.run_trial(
+                    case=case, eval_set=eval_set, model=model, condition=condition, budget_usd=trial_budget_usd,
+                    timeout=timeout_s, binary=claude_path, trial_id=trial_id, expected_cli_version=baseline)
+            except claude_code.VersionChanged as e:
+                print(f"version changed: {e}", file=sys.stderr)
+                state["in_flight"] = None
+                return "version-changed"
             rec.update(run_id=run_id, rep=rep, attempt=attempt)
-            records.append(rec)
-            trials.write(json.dumps(rec) + "\n")
-            trials.flush()
+            # Held so a signal cannot split the file write from the count; it blocks this thread only, not others.
+            held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
+            try:
+                trials.write(json.dumps(rec) + "\n")
+                trials.flush()
+                records.append(rec)
+                state["in_flight"] = None
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, held)
+            baseline = baseline or rec["subject"]["cli_version"]
             _progress(records, rec)
-            stop = _after_record(rec, model)
+            stop = _after_record(rec, model, skill_hash)
             if stop:
                 return stop
             if attempt == 1 and rec["status"] == "infra-error":
@@ -141,6 +181,11 @@ def main(argv=None) -> int:
     if missing:
         ap.error("cannot start, missing: " + "; ".join(missing))
 
+    try:
+        skill_hash = record.skill_sha256(claude_code.SKILL_DIR)
+    except OSError as e:
+        ap.error(f"cannot read the skill folder {claude_code.SKILL_DIR}: {e}")
+
     results_dir = Path(args.results_dir) if args.results_dir else DEFAULT_RESULTS_DIR
     subjects = cfg["subjects"]
     n = args.n if args.n is not None else settings["n_trials"]
@@ -169,37 +214,48 @@ def main(argv=None) -> int:
     effective = {**settings, "n_trials": n, "trial_budget_usd": cfg["trial_budget_usd"],
                  "trial_timeout_s": cfg["trial_timeout_s"], "effective_cap_usd": cap}
     started, records, stop, failed = snapshot.utc_now(), [], None, False
+    state, installed = {"in_flight": None}, {}
     print(f"run {run_id}: {planned} planned trials, projected ${projection['total_usd']:.2f}, "
           f"cap ${cap:.2f} -> {run_dir}", file=sys.stderr)
     try:
+        if threading.current_thread() is threading.main_thread():
+            _install_handlers(installed)
         with open(run_dir / report.TRIALS_FILE, "w", encoding="utf-8", newline="\n") as trials:
             stop = _loop(eval_set=eval_set, subjects=subjects, n=n, max_streak=settings["max_consecutive_excluded"],
                          trial_budget_usd=cfg["trial_budget_usd"], timeout_s=cfg["trial_timeout_s"], cap=cap,
-                         claude_path=claude_path, run_id=run_id, records=records, trials=trials)
+                         claude_path=claude_path, run_id=run_id, records=records, trials=trials, state=state,
+                         skill_hash=skill_hash)
+    except KeyboardInterrupt:
+        stop = "interrupted"
     except BaseException as e:
         stop, failed = f"error:{type(e).__name__}", True
         raise
     finally:
+        for signum in installed:
+            signal.signal(signum, signal.SIG_IGN)
         try:
-            snap = snapshot.build_snapshot(
-                run_id=run_id, stop_reason=stop, started=started, finished=snapshot.utc_now(),
-                overrides={"n": args.n} if args.n is not None else {}, approved_spend_usd=args.approve_spend,
-                claude_path=scrubbed_path, config_sha256=hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
-                settings=effective, eval_set=eval_set, subjects=subjects, judge=cfg["judge"],
-                fixture_accessed=snapshot.fixture_date(FIXTURE_DIR / "SOURCE.md"), planned_slots=planned,
-                projection=projection, records=records)
-            (run_dir / snapshot.SNAPSHOT_FILE).write_text(json.dumps(snap, indent=2) + "\n", encoding="utf-8")
             try:
-                summary = snapshot.format_summary(snap)
-            except Exception as e:  # noqa: BLE001 - must not replace the exception that stopped the run
-                failure = f"summary failed: {type(e).__name__}: {e}"
-                print(failure, file=sys.stderr)
-                summary = f"# Eval run {run_id}\n\n{failure}\n"
-            (run_dir / snapshot.SUMMARY_FILE).write_text(summary, encoding="utf-8")
-        except Exception as e:  # noqa: BLE001 - keep the exception that stopped the run
-            if not failed:
-                raise
-            print(f"snapshot failed: {type(e).__name__}: {e}", file=sys.stderr)
+                snap = snapshot.build_snapshot(
+                    run_id=run_id, stop_reason=stop, started=started, finished=snapshot.utc_now(),
+                    overrides={"n": args.n} if args.n is not None else {}, approved_spend_usd=args.approve_spend,
+                    claude_path=scrubbed_path, config_sha256=hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
+                    settings=effective, eval_set=eval_set, subjects=subjects, judge=cfg["judge"],
+                    fixture_accessed=snapshot.fixture_date(FIXTURE_DIR / "SOURCE.md"), planned_slots=planned,
+                    projection=projection, records=records, in_flight=state["in_flight"])
+                (run_dir / snapshot.SNAPSHOT_FILE).write_text(json.dumps(snap, indent=2) + "\n", encoding="utf-8")
+                try:
+                    summary = snapshot.format_summary(snap)
+                except Exception as e:  # noqa: BLE001 - must not replace the exception that stopped the run
+                    failure = f"summary failed: {type(e).__name__}: {e}"
+                    print(failure, file=sys.stderr)
+                    summary = f"# Eval run {run_id}\n\n{failure}\n"
+                (run_dir / snapshot.SUMMARY_FILE).write_text(summary, encoding="utf-8")
+            except Exception as e:  # noqa: BLE001 - keep the exception that stopped the run
+                if not failed:
+                    raise
+                print(f"snapshot failed: {type(e).__name__}: {e}", file=sys.stderr)
+        finally:
+            _restore_handlers(installed)
     print(f"{snap['status']} ({stop or 'all slots run'}): {run_dir}", file=sys.stderr)
     return 0 if stop is None else 1
 
