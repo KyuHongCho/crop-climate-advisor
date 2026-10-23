@@ -334,19 +334,19 @@ class ApprovalTest(RunCase):
     def test_without_approve_spend_it_prints_the_projection_and_worst_case_and_stops(self):
         res = self.go("--n", "2")
         self.assertNothingRan(res)
-        self.assertIn("Projected spend for 32 planned trials: $1.44 (source: defaults)", res.out)
+        self.assertIn("Projected spend for 32 planned trials: $0.56 (source: defaults)", res.out)
         self.assertIn("32 x $0.50 = $16.00", res.out)
 
     def test_a_projection_over_the_cap_is_refused(self):
-        res = self.go("--n", "3", "--approve-spend", "2")
+        res = self.go("--n", "3", "--approve-spend", "0.8")
         self.assertNothingRan(res)
-        self.assertIn("exceeds the cap $2.00", res.err)
+        self.assertIn("exceeds the cap $0.80", res.err)
 
     def test_approve_spend_lowers_the_cap_and_never_raises_it(self):
-        self.assertNothingRan(self.go("--n", "2", "--approve-spend", "1"))
-        res = self.go("--n", "2", "--approve-spend", "5", over={"run_budget_usd": 1})
+        self.assertNothingRan(self.go("--n", "2", "--approve-spend", "0.5"))
+        res = self.go("--n", "2", "--approve-spend", "5", over={"run_budget_usd": 0.5})
         self.assertNothingRan(res)
-        self.assertIn("exceeds the cap $1.00", res.err)
+        self.assertIn("exceeds the cap $0.50", res.err)
         res = self.go("--n", "3", "--approve-spend", "3", script=Script())
         self.assertEqual((res.code, self.snap(res)["settings"]["effective_cap_usd"]), (0, 3.0))
         shutil.rmtree(self.results)
@@ -354,7 +354,7 @@ class ApprovalTest(RunCase):
         self.assertEqual((res.code, self.snap(res)["settings"]["effective_cap_usd"]), (0, 1))
 
     def test_a_projection_equal_to_the_cap_is_allowed(self):
-        res = self.go("--n", "2", "--approve-spend", "1.44", script=Script(cost=0.001))
+        res = self.go("--n", "2", "--approve-spend", "0.56", script=Script(cost=0.001))
         self.assertEqual((res.code, self.snap(res)["status"]), (0, "complete"))
 
     def test_bad_arguments_exit_2_with_nothing_run(self):
@@ -404,7 +404,7 @@ class ProjectionSourceTest(RunCase):
         self.write_snap("20261001T000000Z-0000000c", cost_by_key={m: {c: {"priced": "10", "mean": 0.1}
                                                                        for c in CONDITIONS} for m in (SONNET, HAIKU)})
         self.write_snap("zzz-not-a-run-id")
-        self.assertEqual(self.source(), ("1.44", "defaults"))
+        self.assertEqual(self.source(), ("0.56", "defaults"))
 
     def test_the_newest_qualifying_snapshot_wins_and_an_approved_one_without_n_qualifies(self):
         self.write_snap("20261001T000000Z-00000001", mean=0.2)
@@ -419,7 +419,7 @@ class ProjectionSourceTest(RunCase):
         self.assertEqual((total, source), ("4.80", "mixed"))
 
     def test_a_results_dir_that_does_not_exist_yet_projects_from_the_defaults(self):
-        self.assertEqual(self.source(), ("1.44", "defaults"))
+        self.assertEqual(self.source(), ("0.56", "defaults"))
         self.assertFalse(self.results.exists())
 
     def test_a_full_run_is_used_only_by_a_run_that_sees_the_same_claude(self):
@@ -430,7 +430,7 @@ class ProjectionSourceTest(RunCase):
         other.mkdir()
         fake_claude(other)
         with self.on_path(other):
-            self.assertEqual(self.source(), ("1.44", "defaults"))
+            self.assertEqual(self.source(), ("0.56", "defaults"))
 
 
 class CapTest(RunCase):
@@ -723,7 +723,7 @@ class SnapshotTest(RunCase):
                                           "by_status": {"ok": 32}})
         self.assertEqual((snap["unpriced"], round(snap["spend_usd"], 6)), (1, round(0.4 + 0.16 + 0.32 + 0.21, 6)))
         self.assertEqual(snap["settings"]["n_trials"], 2)
-        self.assertEqual(snap["projection"]["total_usd"], 1.44)
+        self.assertEqual(snap["projection"]["total_usd"], 0.56)
         self.assertEqual(snap["projection"]["source"], "defaults")
         self.assertEqual(snap["cost_by_key"][SONNET]["skill"], {"sum": 0.4, "priced": 8, "mean": 0.05})
         self.assertEqual(snap["cost_by_key"][HAIKU]["skill"], {"sum": 0.32, "priced": 8, "mean": 0.04})

@@ -297,6 +297,9 @@ another, and **spends real money**: each trial is capped at `trial_budget_usd`, 
 trial. `--approve-spend USD` is required and is a guard against accidents, not an approval: without it the command
 prints the projected cost and the worst case and exits 2 (it also exits 2 when the projection exceeds the cap).
 A run with `--n` is a pilot.
+A model and condition with no complete non-pilot run from the same `claude` path (and at least
+`projection_min_trials` priced attempts) is projected from `cost_defaults_usd`, the per-trial means
+measured in a pilot run, rounded up to the cent.
 
 Each run writes `evals/results/<run-id>/` (gitignored): `trials.jsonl`, one record per attempt; `snapshot.json`;
 and `summary.md`, the run header plus the same report `python -m evals.report <run dir>` prints. An
