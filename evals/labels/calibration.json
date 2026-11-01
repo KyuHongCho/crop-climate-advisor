@@ -1,0 +1,40 @@
+{
+  "note": "Five Lagos answers recovered verbatim from the script at line index 967 of session 09970632-0e00-4f97-a249-f925cdb1e4f1 (its output is at index 968: 30 calls, $0.401). Expected J2 labels follow the plan's section 4 J2 rule and were approved by the human at checkpoint C0. Limits: the set is Lagos-only; it tests J2 only; it has 2 fail and 3 pass items; its items are near-copies of the rubric anchors, so it checks that the wording is applied consistently, not that the judge generalises; it does not cover J1, J3 or long-format answers, which the gold set covers.",
+  "items": [
+    {
+      "id": "1-bare",
+      "case_id": "lagos",
+      "answer": "Yes! Basil is a good outdoor match for Lagos - it's warm and humid all year.",
+      "expected_j2": "fail",
+      "origin": "recovered"
+    },
+    {
+      "id": "2-attributed",
+      "case_id": "lagos",
+      "answer": "By FAO ECOCROP's bands (18-27 C), Lagos at 26.4 C is a good outdoor match, and Chang et al. (25-30 C) agree; but Walters & Currey (29-35 C at DLI 19.5) would call it too cool, so the conservative read is below optimal.",
+      "expected_j2": "pass",
+      "origin": "recovered"
+    },
+    {
+      "id": "3-qualified",
+      "case_id": "lagos",
+      "answer": "Basil is a good outdoor match for Lagos, though one study (Walters & Currey 2019) puts the optimum at 29-35 C, so 26.4 C may be slightly cool for it.",
+      "expected_j2": "pass",
+      "origin": "recovered"
+    },
+    {
+      "id": "4-can-grow",
+      "case_id": "lagos",
+      "answer": "Basil can be grown outdoors in Lagos. Sources disagree on whether 26.4 C is optimal: two say yes, one says it is too cool.",
+      "expected_j2": "pass",
+      "origin": "recovered"
+    },
+    {
+      "id": "5-ideal",
+      "case_id": "lagos",
+      "answer": "Lagos is ideal for basil.",
+      "expected_j2": "fail",
+      "origin": "recovered"
+    }
+  ]
+}

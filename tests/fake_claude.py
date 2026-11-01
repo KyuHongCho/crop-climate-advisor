@@ -1,7 +1,7 @@
 """Stand-ins for the `claude` binary, so no test ever reaches the real one.
 
-    python -m tests.fake_claude <dir> [--sleep N] [--bump-version-after K]
-        writes an `echo_model` stand-in named `claude` into <dir>
+    python -m tests.fake_claude <dir> [--sleep N] [--bump-version-after K] [--judge FILE]
+        writes an `echo_model` stand-in named `claude` into <dir>; with --judge it prints FILE instead
 """
 import argparse
 import shlex
@@ -11,6 +11,7 @@ from pathlib import Path
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "fixtures" / "claude_code"
 STORED_MODEL = "claude-haiku-5-5"
+STORED_JUDGE_MODEL = "claude-opus-5-5"
 ECHO_STREAMS = {"skill": "skill_ok.jsonl", "no-skill": "no_skill_ok.jsonl"}
 
 
@@ -20,7 +21,7 @@ def sample_lines(name):
 
 
 def fake_claude(directory, stream=None, exit_code=0, sleep=0, env_dump=None, emit=None, script=None,
-                echo_model=False, streams=None, bump_version_after=None):
+                echo_model=False, streams=None, bump_version_after=None, judge=None):
     """A stand-in `claude`: answers --version, otherwise prints a stored stream.
 
     With `echo_model` it prints the stream `streams` (default ECHO_STREAMS) names for the condition's --tools value,
@@ -53,6 +54,8 @@ def fake_claude(directory, stream=None, exit_code=0, sleep=0, env_dump=None, emi
         picks = {**ECHO_STREAMS, **(streams or {})}
         body.append(f'"{sys.executable}" -I "{Path(__file__).resolve()}" --serve "{picks["skill"]}" '
                     f'"{picks["no-skill"]}" "$@"')
+    if judge:
+        body.append(f'"{sys.executable}" -I "{Path(__file__).resolve()}" --serve-judge "{Path(judge).resolve()}" "$@"')
     if emit:
         body.append(f'"{sys.executable}" -c \'{emit}\'')
     if script:
@@ -85,18 +88,30 @@ def serve(skill_stream, no_skill_stream, argv):
     return 0
 
 
+def serve_judge(stream_path, argv):
+    """The body of a `--judge` stand-in: print the stored judge stream under the model asked for."""
+    text = Path(stream_path).read_text(encoding="utf-8")
+    sys.stdout.write(text.replace(STORED_JUDGE_MODEL, _flag_value(argv, "--model") or STORED_JUDGE_MODEL))
+    return 0
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["--serve"]:
         return serve(argv[1], argv[2], argv[3:])
+    if argv[:1] == ["--serve-judge"]:
+        return serve_judge(argv[1], argv[2:])
     ap = argparse.ArgumentParser(description="Write an echo_model stand-in `claude` into a directory.")
     ap.add_argument("directory")
     ap.add_argument("--sleep", type=float, default=0, metavar="N", help="sleep N seconds in every model call")
     ap.add_argument("--bump-version-after", type=int, default=None, metavar="K",
                     help="answer 9.9.10 to --version after the first K calls")
+    ap.add_argument("--judge", default=None, metavar="FILE",
+                    help="print this stored judge stream, with the model rewritten to --model, instead of a subject's")
     args = ap.parse_args(argv)
     Path(args.directory).mkdir(parents=True, exist_ok=True)
-    print(fake_claude(args.directory, echo_model=True, sleep=args.sleep, bump_version_after=args.bump_version_after))
+    print(fake_claude(args.directory, echo_model=args.judge is None, sleep=args.sleep,
+                      bump_version_after=args.bump_version_after, judge=args.judge))
     return 0
 
 

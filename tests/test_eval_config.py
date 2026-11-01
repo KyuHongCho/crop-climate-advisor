@@ -128,6 +128,21 @@ class RunSettingsTest(unittest.TestCase):
                 config.run_settings(_run_cfg(cost_defaults_usd=defaults))
 
 
+class JudgeSettingsTest(unittest.TestCase):
+    def test_the_committed_config_pins_the_judge_budget(self):
+        self.assertEqual(config.judge_settings(config.load()), {"judge_budget_usd": 0.25})
+
+    def test_a_missing_or_bad_judge_budget_is_refused_and_load_ignores_the_key(self):
+        for value in (0, -0.01, True, "0.25", None, float("nan"), float("inf"), 10 ** 400, [], {}):
+            with self.subTest(value=value), self.assertRaisesRegex(config.ConfigError, "'judge_budget_usd'"):
+                config.judge_settings(_run_cfg(judge_budget_usd=value))
+        with self.assertRaises(config.ConfigError):
+            config.judge_settings(_run_cfg())
+        self.assertEqual(config.judge_settings(_run_cfg(judge_budget_usd=1)), {"judge_budget_usd": 1})
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(config.load(_write(d, _run_cfg()))["judge"], "claude-opus-5-5")
+
+
 class CasesTest(unittest.TestCase):
     def test_every_case_carries_its_recorded_sites_exact_coordinates(self):
         data = cases.load()

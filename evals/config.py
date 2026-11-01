@@ -83,6 +83,13 @@ def run_settings(cfg: dict) -> dict:
     return {k: cfg[k] for k in keys}
 
 
+def judge_settings(cfg: dict) -> dict:
+    """The judge's per-call cap from a loaded config; `load` itself does not read it."""
+    if not positive_number(cfg.get("judge_budget_usd")):
+        raise ConfigError("'judge_budget_usd' must be a finite number greater than 0")
+    return {"judge_budget_usd": cfg["judge_budget_usd"]}
+
+
 def check_canonical(configured: str, canonical_models, require_model: bool = False) -> None:
     """Record-time R3 for a subject: every model that ran must be the configured one."""
     if require_model and not canonical_models:

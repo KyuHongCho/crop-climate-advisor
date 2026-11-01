@@ -16,7 +16,7 @@ tool — built as real, working code with transparently reported status.
 > disagreeing published claims rather than one (the other six show their FAO ECOCROP claim only) —
 > and the NASA POWER climate lookup is exposed as an **MCP server**. The **Agent Skill** is written,
 > and one eval trial at a time runs through it, but only four deterministic checks score how that
-> disagreement is handled yet (no model judge; a repeated-run harness with spend caps exists, but no measured run has been made yet), and the RAG layer is **not built**.
+> disagreement is handled yet (the Opus judge is built for one record at a time and is not part of any run yet; a repeated-run harness with spend caps exists, but no measured run has been made yet), and the RAG layer is **not built**.
 > See [What works / What's planned](#what-works--whats-planned).
 > This README describes only what actually runs; planned work is labelled as such.
 
@@ -30,7 +30,7 @@ tool — built as real, working code with transparently reported status.
 | ✅ | CLI + offline unit tests | **working** |
 | ✅ | NASA POWER wrapped as an **MCP server** (official SDK, stdio) | **working** — the CLI still calls `fetch_climate` directly, not via MCP |
 | ✅ | Basil's optimal temperature carried as **three attributed claims**, not one — each with its stated condition and the paper it was verified through (see [The eval case](#the-eval-case)) | **working** — for basil only (journal claims are attached to ECOCROP id 1547; the other crops show the ECOCROP claim alone) the CLI prints all three and derives from their intersection that no single window satisfies them all; for the queried location it also reports where that location falls relative to each claim, flags it when the sources point in opposite directions there, and prints a conservative read that never calls a site optimal unless every source does |
-| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | **partly built** — one trial per command, with or without the Skill, writes a record with a status (see [The Agent Skill](#the-agent-skill)), and `python -m evals.score` grades that record with four deterministic checks; `python -m evals.run` repeats trials across the grid with a spend cap and writes `trials.jsonl`, `snapshot.json` and `summary.md`, and `python -m evals.report` summarises them; deterministic checks only, no model judge or measured run yet |
+| ⏳ | Eval harness — turning that disagreement into a scored, repeatable pass/fail run | **partly built** — one trial per command, with or without the Skill, writes a record with a status (see [The Agent Skill](#the-agent-skill)), and `python -m evals.score` grades that record with four deterministic checks; `python -m evals.run` repeats trials across the grid with a spend cap and writes `trials.jsonl`, `snapshot.json` and `summary.md`, and `python -m evals.report` summarises them; deterministic checks, plus an Opus judge for one record at a time (`python -m evals.judge`; see [The judge](#the-judge)), no run-level judging or measured run yet |
 | ⏳ | Narrative RAG over ECOCROP free-text + peer-reviewed papers | planned |
 | ✅ | Packaged as a **Claude Code Agent Skill** (`SKILL.md`) | **written** — `.agents/skills/crop-suitability/`; Claude Code invokes it and runs the CLI, but whether it improves the answers is not yet measured |
 
@@ -187,7 +187,8 @@ data/ecocrop/           # bundled, scraped-once crop requirements (JSON)
 scripts/scrape_ecocrop.py   # one-time ECOCROP scraper
 evals/                  # model-behaviour eval: trial.py, run.py, snapshot.py, adapters/claude_code.py, status.py,
                         #   record.py, cases.json, config.json, record_fixtures.py, fixtures/nasa_power/ (replayed
-                        #   climate), results/ (run output, gitignored)
+                        #   climate), judge.py + judgements.py + rubric.md (the Opus judge), labels/ (calibration items), results/
+                        #   (run output, gitignored)
 .agents/skills/crop-suitability/   # the Agent Skill: SKILL.md + reference/
 tests/                  # offline unit tests (+ one opt-in live NASA POWER test)
 ```
@@ -320,3 +321,32 @@ The run stops, keeps what it has, writes a snapshot and exits 1 when:
 Your own instruction files stop the run on its first trial (rule 1). SIGKILL ends the run without a snapshot and
 can leave the `claude` child running; so can a signal that lands in the few milliseconds in which a trial's
 `claude` process is being started.
+
+## The judge
+
+```bash
+python -m evals.judge path/to/record.json --approve-spend 0.5 --out judgements.jsonl
+```
+
+asks the judge model (`judge` in `evals/config.json`, Opus) to decide three criteria for one `ok` trial record, each
+twice: **J1** no single optimal window presented without attribution, **J2** no favourable verdict left unqualified,
+**J3** the answer states that the sources point in opposite directions where they do, and only there. The rubric is
+`evals/rubric.md`; the judge sees the answer, the site, the three sources' bands and each source's direction at the
+site's annual mean. The facts block also shows that annual mean temperature, the DLI condition each journal source
+states for its band, and a yes/no line saying whether one source points below and another above at that site; the
+directions and the yes/no line are computed from the recorded climate with `claims.classify` and `claims.divergence`.
+The judge never sees the trial's own condition (skill or no-skill), its model, tool calls or cost. It **spends real money**: each call is capped
+at `judge_budget_usd`, so the two calls are projected at twice that, and `--approve-spend` must be at least the
+projection. It is a gate on starting, not a cap on spending: an `infra-error` is re-run once, so up to four calls can be
+paid (twice the projection) and each can overshoot by one turn. Without it the command prints the projection and exits 2. It exits 1 when a model other than the
+configured judge answers, on a setup fault no re-run would fix, or when a criterion could not be decided because a
+call failed. A directory (a whole run) is not judged yet. Ctrl-C stops the `claude` child's process group, but SIGTERM
+or SIGHUP ends the command and can leave the paid `claude` child running until it finishes.
+
+`evals/labels/calibration.json` holds five recovered Lagos answers with the J2 label a human expects for each. Its limits:
+
+- The calibration set is Lagos-only.
+- It tests J2 only.
+- It has 2 fail and 3 pass items.
+- Its items are near-copies of the rubric's anchors, so it checks that the wording is applied consistently, not that the judge generalises.
+- It does not cover J1, J3 or long-format answers; a gold set planned for later is meant to.

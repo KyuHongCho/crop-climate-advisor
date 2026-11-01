@@ -1,0 +1,69 @@
+{
+  "j0": {
+    "date": "2026-10-31",
+    "cli_version": "2.1.316",
+    "real": true,
+    "stream": "j0_call1.jsonl",
+    "note": "J0 call 1 of 2, a live shape probe of the Opus judge through claude_code.run with the argv in evals/judge.py, passed through record.scrubber. Its answer is short and its cost figure ($0.03208, a cache write of about 3.1k tokens) is not representative of a full-length answer, so it must not set judge_cost_default_usd.",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "J1": {"type": "object", "properties": {"verdict": {"enum": ["pass", "fail", "unknown"]}, "rationale": {"type": "string"}}, "required": ["verdict", "rationale"], "additionalProperties": false},
+        "J2": {"type": "object", "properties": {"verdict": {"enum": ["pass", "fail", "unknown"]}, "rationale": {"type": "string"}}, "required": ["verdict", "rationale"], "additionalProperties": false},
+        "J3": {"type": "object", "properties": {"verdict": {"enum": ["pass", "fail", "unknown"]}, "rationale": {"type": "string"}}, "required": ["verdict", "rationale"], "additionalProperties": false}
+      },
+      "required": ["J1", "J2", "J3"],
+      "additionalProperties": false
+    }
+  },
+  "samples": [
+    {
+      "name": "j0_call1",
+      "stream": "j0_call1.jsonl",
+      "synthesised": false,
+      "provenance": "REAL capture, 2026-10-31, Claude Code 2.1.316, claude-opus-5-5, the J0 probe's call 1: structured_output on the result event, result the same JSON as a string, one StructuredOutput tool call, permission_denials empty, init tools [\"StructuredOutput\"], num_turns 2. The answer is short and the cost is not representative."
+    },
+    {
+      "name": "j0_call1_null_result",
+      "stream": "j0_call1_null_result.jsonl",
+      "synthesised": true,
+      "provenance": "synthesised: j0_call1 with the result event's `result` set to null, the shape that classify_status rule 11 calls harness-error and that mapping step 6 rescues"
+    },
+    {
+      "name": "error_max_structured_output_retries",
+      "stream": "error_max_structured_output_retries.jsonl",
+      "synthesised": true,
+      "provenance": "synthesised from the docs-named subtype: an error_max_structured_output_retries result event with no structured_output and no modelUsage. Whether a real one carries modelUsage is unverified."
+    },
+    {
+      "name": "error_max_structured_output_retries_with_model_usage",
+      "stream": "error_max_structured_output_retries_with_model_usage.jsonl",
+      "synthesised": true,
+      "provenance": "synthesised: error_max_structured_output_retries with the J0 capture's modelUsage entry kept"
+    },
+    {
+      "name": "success_no_structured_output_null_result",
+      "stream": "success_no_structured_output_null_result.jsonl",
+      "synthesised": true,
+      "provenance": "synthesised from the docs-named shape: a success result event with no structured_output field and result null"
+    },
+    {
+      "name": "success_no_structured_output_text_result",
+      "stream": "success_no_structured_output_text_result.jsonl",
+      "synthesised": true,
+      "provenance": "synthesised: a success result event with no structured_output field and a non-null result"
+    },
+    {
+      "name": "success_is_error_no_subtype",
+      "stream": "success_is_error_no_subtype.jsonl",
+      "synthesised": true,
+      "provenance": "synthesised: a result event with subtype success, is_error true and no error_* subtype"
+    },
+    {
+      "name": "record_lagos_no_skill",
+      "stream": null,
+      "synthesised": true,
+      "provenance": "synthesised: a no-skill Lagos record built with claude_code.to_record from the no_skill_ok stream, its answer replaced by the calibration item 1-bare"
+    }
+  ]
+}
