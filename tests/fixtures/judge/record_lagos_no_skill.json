@@ -1,0 +1,237 @@
+{
+  "record_version": 1,
+  "case_id": "lagos",
+  "eval_set_version": "1",
+  "eval_set_sha256": "e255f1e01cd030790c39b2cb413b0d0f6c46aaec3c2f1a56c21c46fd0cd7bf9d",
+  "trial_id": "lagos-no-skill-claude-sonnet-5-5-r1-a1-0000e5a0",
+  "subject": {
+    "adapter": "claude_code",
+    "cli_version": "2.1.316",
+    "model": "claude-sonnet-5-5",
+    "canonical_model": "claude-sonnet-5-5",
+    "canonical_models": [
+      "claude-sonnet-5-5"
+    ],
+    "init": {
+      "claude_code_version": "2.1.301",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "auto",
+      "tools": [],
+      "skills": [
+        "deep-research",
+        "design",
+        "design-sync",
+        "dataviz",
+        "update-config",
+        "verify",
+        "debug",
+        "code-review",
+        "simplify",
+        "batch",
+        "fewer-permission-prompts",
+        "doctor",
+        "loop",
+        "schedule",
+        "claude-api",
+        "workflow-authoring",
+        "run",
+        "run-skill-generator",
+        "plugin-authoring"
+      ],
+      "mcp_servers": []
+    }
+  },
+  "condition": {
+    "condition": "no-skill",
+    "skill_sha256": null
+  },
+  "output": {
+    "prompt": "I want to grow basil outdoors in Lagos (latitude 6.52, longitude 3.38). Is the climate there suitable for basil, and what temperature range is optimal for it?",
+    "answer": "Yes! Basil is a good outdoor match for Lagos - it's warm and humid all year.",
+    "tool_calls": []
+  },
+  "usage": {
+    "tokens": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 3053,
+      "cache_read_input_tokens": 649,
+      "output_tokens": 4,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 3053,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "global",
+      "iterations": [
+        {
+          "input_tokens": 2,
+          "output_tokens": 4,
+          "cache_read_input_tokens": 649,
+          "cache_creation_input_tokens": 3053,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 3053
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard",
+      "fallback_credit": null
+    },
+    "cost_usd": 0.0006192900000000001,
+    "latency_ms": 9000,
+    "duration_ms": 1516,
+    "turns": 1
+  },
+  "status_inputs": {
+    "exit_code": 0,
+    "signal": null,
+    "timed_out": false,
+    "harness_exception": null,
+    "stderr_tail": "",
+    "stream_parsed": true,
+    "result_event": {
+      "duration_api_ms": 1482,
+      "stop_reason": "end_turn",
+      "session_id": "7bb552c1-6b30-4fb2-829e-ba55a369423b",
+      "total_cost_usd": 0.0006192900000000001,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 3053,
+        "cache_read_input_tokens": 649,
+        "output_tokens": 4,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 3053,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_read_input_tokens": 649,
+            "cache_creation_input_tokens": 3053,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 3053
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "modelUsage": {
+        "claude-haiku-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 4,
+          "cacheReadInputTokens": 649,
+          "cacheCreationInputTokens": 3053,
+          "webSearchRequests": 0,
+          "costUSD": 0.0006192900000000001,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-haiku-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "fast_mode_disabled_reason": "sdk_opt_in_required",
+      "subagent_stats": {
+        "spawned": 0,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 0
+        },
+        "started_in_background": 0,
+        "max_depth": 0,
+        "spawned_by_subagents": 0,
+        "completed": 0,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {}
+      },
+      "safety_stops": 0,
+      "is_error": false,
+      "num_turns": 1,
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "OK",
+      "ttft_ms": 1502,
+      "type": "result",
+      "duration_ms": 1516,
+      "uuid": "9437697c-9bf4-4863-901c-f9ac833ba588",
+      "ttft_stream_ms": 1502,
+      "time_to_request_ms": 34,
+      "first_content_frame_ms": 1502,
+      "queued_turn_count": 0,
+      "result_index": 0
+    },
+    "cli_tool_results": [],
+    "permission_denials": [],
+    "bash_commands": [],
+    "read_paths": [],
+    "skill_calls": [],
+    "listed_skills": [
+      "deep-research",
+      "design",
+      "design-sync",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "schedule",
+      "claude-api",
+      "workflow-authoring",
+      "run",
+      "run-skill-generator",
+      "plugin-authoring"
+    ],
+    "condition": "no-skill",
+    "redaction_conflict": null,
+    "expected_replay_file": "6.52_3.38.json"
+  },
+  "status": "ok",
+  "status_rule": "11",
+  "status_reason": "answered",
+  "tags": [],
+  "attempt": 1,
+  "spans": [],
+  "run_id": "20261031T000000Z-0000e5a0",
+  "rep": 1
+}
