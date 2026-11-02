@@ -1,6 +1,6 @@
 """The judge's neutral layer: the config hash and its inputs, the judgement sidecars, strict JSON documents.
 
-It imports only the standard library, so `judge`, `report` and `snapshot` can all use it without an import cycle.
+It imports only the standard library, so any eval module can use it without an import cycle.
 """
 import hashlib
 import json
@@ -19,7 +19,7 @@ RUNS = 2
 _VERDICT_SCHEMA = {"type": "object",
                    "properties": {"verdict": {"enum": list(VERDICTS)}, "rationale": {"type": "string"}},
                    "required": ["verdict", "rationale"], "additionalProperties": False}
-# Must equal the schema the J0 probe sent; tests/fixtures/judge/samples.json pins it.
+# Must equal the schema the live probe sent; tests/fixtures/judge/samples.json pins it.
 OUTPUT_SCHEMA = {"type": "object", "properties": {c: _VERDICT_SCHEMA for c in CRITERIA},
                  "required": list(CRITERIA), "additionalProperties": False}
 

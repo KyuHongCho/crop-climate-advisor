@@ -4,7 +4,7 @@
     "cli_version": "2.1.316",
     "real": true,
     "stream": "j0_call1.jsonl",
-    "note": "J0 call 1 of 2, a live shape probe of the Opus judge through claude_code.run with the argv in evals/judge.py, passed through record.scrubber. Its answer is short and its cost figure ($0.03208, a cache write of about 3.1k tokens) is not representative of a full-length answer, so it must not set judge_cost_default_usd.",
+    "note": "Call 1 of 2 of the live probe, a shape probe of the Opus judge through claude_code.run with the argv in evals/judge.py, passed through record.scrubber. Its answer is short and its cost figure ($0.03208, a cache write of about 3.1k tokens) is not representative of a full-length answer, so it must not be used as a default cost.",
     "json_schema": {
       "type": "object",
       "properties": {
@@ -21,7 +21,7 @@
       "name": "j0_call1",
       "stream": "j0_call1.jsonl",
       "synthesised": false,
-      "provenance": "REAL capture, 2026-10-31, Claude Code 2.1.316, claude-opus-5-5, the J0 probe's call 1: structured_output on the result event, result the same JSON as a string, one StructuredOutput tool call, permission_denials empty, init tools [\"StructuredOutput\"], num_turns 2. The answer is short and the cost is not representative."
+      "provenance": "REAL capture, 2026-10-31, Claude Code 2.1.316, claude-opus-5-5, the live probe's call 1: structured_output on the result event, result the same JSON as a string, one StructuredOutput tool call, permission_denials empty, init tools [\"StructuredOutput\"], num_turns 2. The answer is short and the cost is not representative."
     },
     {
       "name": "j0_call1_null_result",
@@ -39,7 +39,7 @@
       "name": "error_max_structured_output_retries_with_model_usage",
       "stream": "error_max_structured_output_retries_with_model_usage.jsonl",
       "synthesised": true,
-      "provenance": "synthesised: error_max_structured_output_retries with the J0 capture's modelUsage entry kept"
+      "provenance": "synthesised: error_max_structured_output_retries with the live capture's modelUsage entry kept"
     },
     {
       "name": "success_no_structured_output_null_result",

@@ -1,5 +1,5 @@
 {
-  "note": "Five Lagos answers recovered verbatim from the script at line index 967 of session 09970632-0e00-4f97-a249-f925cdb1e4f1 (its output is at index 968: 30 calls, $0.401). Expected J2 labels follow the plan's section 4 J2 rule and were approved by the human at checkpoint C0. Limits: the set is Lagos-only; it tests J2 only; it has 2 fail and 3 pass items; its items are near-copies of the rubric anchors, so it checks that the wording is applied consistently, not that the judge generalises; it does not cover J1, J3 or long-format answers, which the gold set covers.",
+  "note": "Five Lagos answers recovered verbatim from the script at line index 967 of session 09970632-0e00-4f97-a249-f925cdb1e4f1 (its output is at index 968: 30 calls, $0.401). Expected J2 labels follow the J2 rule in evals/rubric.md and were approved by hand. Limits: the set is Lagos-only; it tests J2 only; it has 2 fail and 3 pass items; its items are near-copies of the rubric anchors, so it checks that the wording is applied consistently, not that the judge generalises; it does not cover J1, J3 or long-format answers; a gold set planned for later is meant to.",
   "items": [
     {
       "id": "1-bare",
