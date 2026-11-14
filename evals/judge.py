@@ -83,6 +83,7 @@ class Mapped(NamedTuple):
     require_model: bool
     retry: bool
     systemic: bool
+    reason: str
 
 
 def map_call(run_result, parsed, failure=None) -> Mapped:
@@ -96,7 +97,7 @@ def map_call(run_result, parsed, failure=None) -> Mapped:
         permission_denials=(event or {}).get("permission_denials") or ()))
 
     def result(outcome, structured=None, require_model=False, retry=False, systemic=False):
-        return Mapped(outcome, st.status, st.rule, structured, require_model, retry, systemic)
+        return Mapped(outcome, st.status, st.rule, structured, require_model, retry, systemic, st.reason)
 
     if st.rule in run.SYSTEMIC:
         return result("failed", systemic=True)
@@ -122,15 +123,27 @@ def _cost(event):
 
 
 class AttemptResult(NamedTuple):
-    line: object
+    line: dict
     stop: object
     mapped: Mapped
     said: object = None
     r3: object = None
 
 
+def _said(rr, parsed):
+    """What a failed call reported itself, raw: ("event", an error event's `result`) else ("stderr", stderr) else None."""
+    event = parsed.get("result_event") if isinstance(parsed, dict) else None
+    if isinstance(event, dict):
+        subtype, text = event.get("subtype"), event.get("result")
+        marked = event.get("is_error") is True or (isinstance(subtype, str) and subtype.startswith("error_"))
+        if marked and isinstance(text, str) and text:
+            return "event", text
+    stderr = rr.get("stderr") if isinstance(rr, dict) else None
+    return ("stderr", stderr) if isinstance(stderr, str) and stderr else None
+
+
 def judge_attempt(*, trial_id, run_index, attempt, args, work, env, timeout, model, scrub, hashes) -> AttemptResult:
-    """One call: the version read, the run, its mapping and, unless it will be re-run, record-time R3 and the line."""
+    """One call: the version read, the run, its mapping, record-time R3 and the line; it prints nothing."""
     started, failure, rr, parsed, version = snapshot.utc_now(), None, None, {}, None
     try:
         version = claude_code.cli_version(args[0], env, work)
@@ -138,35 +151,30 @@ def judge_attempt(*, trial_id, run_index, attempt, args, work, env, timeout, mod
         parsed = claude_code.parse(rr["lines"])
     except Exception as e:  # noqa: BLE001 - any harness fault becomes rule 1, never a lost call
         failure = f"{type(e).__name__}: {e}"
-    mapped = map_call(rr, parsed, failure)
-    if mapped.retry and attempt == 1:
-        return AttemptResult(None, None, mapped)
-    event = parsed.get("result_event")
-    models = claude_code.canonical_models(event)
-    outcome, structured = mapped.outcome, mapped.structured
-    stop = f"systemic:{mapped.rule}" if mapped.systemic else None
+    said, event, r3 = _said(rr, parsed), parsed.get("result_event"), None
     try:
-        config.check_canonical(model, models, require_model=mapped.require_model)
-    except config.ModelMismatch as e:
-        print(f"R3 stop: {e}", file=sys.stderr)
-        # A verdict from another model must never be read back as one, so the line keeps only its cost.
-        outcome, structured, stop = "failed", None, "r3"
-    verdicts = judgements.parse_output(structured) if outcome == "complete" else None
+        mapped = map_call(rr, parsed, failure)
+        models = claude_code.canonical_models(event)
+        outcome, structured = mapped.outcome, mapped.structured
+        stop = f"systemic:{mapped.rule}" if mapped.systemic else None
+        try:
+            config.check_canonical(model, models, require_model=mapped.require_model)
+        except config.ModelMismatch as e:
+            r3 = str(e)
+            # A verdict from another model must never be read back as one, so the line keeps only its cost.
+            outcome, structured, stop = "failed", None, "r3"
+        verdicts = judgements.parse_output(structured) if outcome == "complete" else None
+        raw = record.scrub_tree(structured, scrub)
+    except Exception as e:  # noqa: BLE001 - a paid call must always leave a line; the bad event is not mapped again
+        mapped = map_call(rr, {**parsed, "result_event": None}, f"{type(e).__name__}: {e}")
+        models, outcome, verdicts, raw, r3 = [], "failed", None, None, None
+        stop = f"systemic:{mapped.rule}"
     line = {"trial_id": trial_id, "run_index": run_index, "rubric_sha256": hashes[0], "judge_config_sha256": hashes[1],
             "judge_model": model, "canonical_models": models, "cli_version": version, "status": mapped.status,
-            "outcome": outcome, "cost_usd": _cost(event), "latency_ms": (rr or {}).get("latency_ms"),
-            "started_at": started, "ended_at": snapshot.utc_now(), "verdicts": verdicts,
-            "raw": record.scrub_tree(structured, scrub)}
-    return AttemptResult(line, stop, mapped)
-
-
-def judge_run(*, trial_id, run_index, args, work, env, timeout, model, scrub, hashes):
-    """One run: an infra-error is re-run once. Returns the final attempt's (line, stop reason)."""
-    for attempt in (1, 2):
-        result = judge_attempt(trial_id=trial_id, run_index=run_index, attempt=attempt, args=args, work=work, env=env,
-                               timeout=timeout, model=model, scrub=scrub, hashes=hashes)
-        if not (result.mapped.retry and attempt == 1):
-            return result.line, result.stop
+            "status_rule": mapped.rule, "outcome": outcome, "attempt": attempt, "cost_usd": _cost(event),
+            "latency_ms": (rr or {}).get("latency_ms"), "started_at": started, "ended_at": snapshot.utc_now(),
+            "verdicts": verdicts, "raw": raw}
+    return AttemptResult(line, stop, mapped, said, r3)
 
 
 # C0 and C1 controls except newline and tab, and the bidi overrides, which a terminal would act on.
@@ -175,6 +183,22 @@ _UNPRINTABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u206
 
 def _safe(text) -> str:
     return _UNPRINTABLE.sub("", str(text)).encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def report_attempt(prefix, line, mapped, said, r3, scrub, suffix=""):
+    """Everything one attempt prints on stderr: the progress line, the reason and what the CLI said."""
+    cost = "unpriced" if line["cost_usd"] is None else "$%.4f" % line["cost_usd"]
+    print(f"{prefix} attempt {line['attempt']}: {line['outcome']} (status {line['status']}, rule {line['status_rule']}) "
+          f"cost {cost}{suffix}", file=sys.stderr)
+    if line["outcome"] != "complete":
+        reason = f"R3 stop: {r3}" if r3 else mapped.reason
+        if not r3 and line["outcome"] == "schema-failure" and (mapped.status, mapped.rule) == ("ok", "11"):
+            reason = "no structured output returned" if mapped.structured is None else REASONS["schema-failure"]
+        print(f"  reason: {_safe(scrub(reason))}", file=sys.stderr)
+    if mapped.outcome == "failed" and said:
+        kind, text = said
+        text = scrub(text)
+        print(f"  claude said: {_safe(text[:300] if kind == 'event' else text[-300:])}", file=sys.stderr)
 
 
 def format_report(trial_id, case_id, lines) -> str:
@@ -250,20 +274,27 @@ def main(argv=None) -> int:
                 ap.error(f"cannot write --out {args.out}: {type(e).__name__}: {e}; nothing ran")
         call = command(prompt, cfg["judge"], settings["judge_budget_usd"], claude_path)
         hashes, scrub = (judgements.rubric_sha256(), judgements.config_sha256()), record.scrubber(work, env)
+        print(f"judging {rec['trial_id']} with {cfg['judge']}: {runs} runs, each call up to {cfg['trial_timeout_s']}s",
+              file=sys.stderr)
         for index in range(1, runs + 1):
-            line, stop = judge_run(trial_id=rec["trial_id"], run_index=index, args=call, work=work, env=env,
-                                   timeout=cfg["trial_timeout_s"], model=cfg["judge"], scrub=scrub, hashes=hashes)
-            lines.append(line)
-            if args.out:
-                try:
-                    judgements.append_line(args.out, line)
-                except (OSError, ValueError) as e:
-                    print(f"cannot write --out {args.out}: {type(e).__name__}: {e}", file=sys.stderr)
-                    stop = "write-failed"
-            cost = "unpriced" if line["cost_usd"] is None else "$%.4f" % line["cost_usd"]
-            print(f"run {index}: {line['outcome']} (status {line['status']}) cost {cost}", file=sys.stderr)
+            for attempt in (1, 2):
+                result = judge_attempt(trial_id=rec["trial_id"], run_index=index, attempt=attempt, args=call, work=work,
+                                       env=env, timeout=cfg["trial_timeout_s"], model=cfg["judge"], scrub=scrub,
+                                       hashes=hashes)
+                line, stop = result.line, result.stop
+                lines.append(line)
+                if args.out:
+                    try:
+                        judgements.append_line(args.out, line)
+                    except (OSError, ValueError) as e:
+                        print(f"cannot write --out {args.out}: {type(e).__name__}: {e}", file=sys.stderr)
+                        stop = "write-failed"
+                report_attempt(f"run {index}", line, result.mapped, result.said, result.r3, scrub)
+                if stop:
+                    print(f"stopped: {stop}", file=sys.stderr)
+                if stop or not (result.mapped.retry and attempt == 1):
+                    break
             if stop:
-                print(f"stopped: {stop}", file=sys.stderr)
                 break
     print(format_report(rec["trial_id"], rec["case_id"], lines))
     complete = all(v is not None for v in judgements.derive(

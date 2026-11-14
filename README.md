@@ -338,7 +338,10 @@ directions and the yes/no line are computed from the recorded climate with `clai
 The judge never sees the trial's own condition (skill or no-skill), its model, tool calls or cost. It **spends real money**: each call is capped
 at `judge_budget_usd`, so the two calls are projected at twice that, and `--approve-spend` must be at least the
 projection. It is a gate on starting, not a cap on spending: an `infra-error` is re-run once, so up to four calls can be
-paid (twice the projection) and each can overshoot by one turn. Without `--approve-spend` the command prints the projection and exits 2. It exits 1 when a model other than the
+paid (twice the projection) and each can overshoot by one turn. Each attempt is its own line in `--out`, carrying
+`attempt` (1 or 2) and `status_rule` (the rule id; the reason text is never stored), so a re-run's first call keeps its cost. On stderr every
+attempt prints a progress line, a call that did not complete also prints its reason in full, and a call that itself
+failed also prints what the CLI said, as a `claude said:` line. Without `--approve-spend` the command prints the projection and exits 2. It exits 1 when a model other than the
 configured judge answers, on a setup fault no re-run would fix, when a line cannot be written to `--out` (the remaining
 run is skipped), or when a criterion could not be decided because a call failed. A directory (a whole run) is not judged yet. Ctrl-C stops the `claude` child's process group, but SIGTERM
 or SIGHUP ends the command and can leave the paid `claude` child running until it finishes.

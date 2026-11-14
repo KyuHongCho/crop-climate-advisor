@@ -14,6 +14,9 @@ RUBRIC_PATH = Path(__file__).resolve().parent / "rubric.md"
 CRITERIA = ("J1", "J2", "J3")
 VERDICTS = ("pass", "fail", "unknown")
 OUTCOMES = ("complete", "schema-failure", "judge-runaway", "failed")
+# The rule ids evals/status.py returns; a test compares this set with that file.
+STATUS_RULES = frozenset({"1", "1b", "1c", "1d", "2", "3", "4a", "4b", "4c", "5", "6", "7", "8", "9", "9b", "9c", "9d",
+                          "10", "11"})
 RUNS = 2
 
 _VERDICT_SCHEMA = {"type": "object",
@@ -119,6 +122,10 @@ def line_problems(line) -> list:
     for key in ("rubric_sha256", "judge_config_sha256"):
         if not isinstance(line.get(key), str) or not _HEX64.fullmatch(line[key]):
             problems.append(f"{key} must be 64 lowercase hex digits")
+    if "attempt" in line and (type(line["attempt"]) is not int or line["attempt"] not in (1, 2)):
+        problems.append("attempt must be 1 or 2")
+    if "status_rule" in line and (not isinstance(line["status_rule"], str) or line["status_rule"] not in STATUS_RULES):
+        problems.append("status_rule must be one of the rule ids in evals/status.py")
     outcome, verdicts = line.get("outcome"), line.get("verdicts")
     if outcome not in OUTCOMES:
         problems.append(f"outcome must be one of {', '.join(OUTCOMES)}")
