@@ -121,19 +121,26 @@ def _cost(event):
     return cost if ok else None
 
 
-def judge_run(*, trial_id, run_index, args, work, env, timeout, model, scrub, hashes):
-    """One run: the call (an infra-error re-run once), its mapping and record-time R3. Returns (line, stop reason)."""
-    for attempt in (1, 2):
-        started, failure, rr, parsed, version = snapshot.utc_now(), None, None, {}, None
-        try:
-            version = claude_code.cli_version(args[0], env, work)
-            rr = claude_code.run(args, work, env, timeout)
-            parsed = claude_code.parse(rr["lines"])
-        except Exception as e:  # noqa: BLE001 - any harness fault becomes rule 1, never a lost call
-            failure = f"{type(e).__name__}: {e}"
-        mapped = map_call(rr, parsed, failure)
-        if not (mapped.retry and attempt == 1):
-            break
+class AttemptResult(NamedTuple):
+    line: object
+    stop: object
+    mapped: Mapped
+    said: object = None
+    r3: object = None
+
+
+def judge_attempt(*, trial_id, run_index, attempt, args, work, env, timeout, model, scrub, hashes) -> AttemptResult:
+    """One call: the version read, the run, its mapping and, unless it will be re-run, record-time R3 and the line."""
+    started, failure, rr, parsed, version = snapshot.utc_now(), None, None, {}, None
+    try:
+        version = claude_code.cli_version(args[0], env, work)
+        rr = claude_code.run(args, work, env, timeout)
+        parsed = claude_code.parse(rr["lines"])
+    except Exception as e:  # noqa: BLE001 - any harness fault becomes rule 1, never a lost call
+        failure = f"{type(e).__name__}: {e}"
+    mapped = map_call(rr, parsed, failure)
+    if mapped.retry and attempt == 1:
+        return AttemptResult(None, None, mapped)
     event = parsed.get("result_event")
     models = claude_code.canonical_models(event)
     outcome, structured = mapped.outcome, mapped.structured
@@ -150,7 +157,16 @@ def judge_run(*, trial_id, run_index, args, work, env, timeout, model, scrub, ha
             "outcome": outcome, "cost_usd": _cost(event), "latency_ms": (rr or {}).get("latency_ms"),
             "started_at": started, "ended_at": snapshot.utc_now(), "verdicts": verdicts,
             "raw": record.scrub_tree(structured, scrub)}
-    return line, stop
+    return AttemptResult(line, stop, mapped)
+
+
+def judge_run(*, trial_id, run_index, args, work, env, timeout, model, scrub, hashes):
+    """One run: an infra-error is re-run once. Returns the final attempt's (line, stop reason)."""
+    for attempt in (1, 2):
+        result = judge_attempt(trial_id=trial_id, run_index=run_index, attempt=attempt, args=args, work=work, env=env,
+                               timeout=timeout, model=model, scrub=scrub, hashes=hashes)
+        if not (result.mapped.retry and attempt == 1):
+            return result.line, result.stop
 
 
 # C0 and C1 controls except newline and tab, and the bidi overrides, which a terminal would act on.
