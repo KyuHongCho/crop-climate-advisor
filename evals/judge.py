@@ -165,7 +165,7 @@ def judge_attempt(*, trial_id, run_index, attempt, args, work, env, timeout, mod
             outcome, structured, stop = "failed", None, "r3"
         verdicts = judgements.parse_output(structured) if outcome == "complete" else None
         raw = record.scrub_tree(structured, scrub)
-    except Exception as e:  # noqa: BLE001 - a paid call must always leave a line; the bad event is not mapped again
+    except Exception as e:  # noqa: BLE001 - rule 1 and a stored line; the bad event is never mapped again or re-run
         mapped = map_call(rr, {**parsed, "result_event": None}, f"{type(e).__name__}: {e}")
         models, outcome, verdicts, raw, r3 = [], "failed", None, None, None
         stop = f"systemic:{mapped.rule}"

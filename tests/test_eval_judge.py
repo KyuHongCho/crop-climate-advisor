@@ -970,6 +970,11 @@ class AttemptTest(JudgeCase):
                          {("schema-failure", "ok", "11")})
         self.assertIn("  reason: no structured output returned", res.err)
         self.assertNotIn("answered", res.err)
+        res = self.go(run_result(stream("success_no_structured_output_null_result")))
+        self.assertEqual({(ln["outcome"], ln["status"], ln["status_rule"]) for ln in res.lines},
+                         {("schema-failure", "harness-error", "11")})
+        self.assertIn("  reason: result event carries no answer", res.err)
+        self.assertNotIn("no structured output returned", res.err)
         invalid = {c: v for c, v in verdicts_output().items() if c != "J3"}
         res = self.go(run_result(with_output(stream("j0_call1"), invalid)))
         self.assertEqual({(ln["outcome"], ln["status"], ln["status_rule"]) for ln in res.lines},
