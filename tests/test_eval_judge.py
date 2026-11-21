@@ -1005,10 +1005,9 @@ class AttemptTest(JudgeCase):
                                  (("event", "bad\x1b[2J text"), None, "bad[2J text")):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                judge.report_attempt("trial-1 run 2", line, mapped, said, r3, scrub, suffix=", spend $1.0000")
+                judge.report_attempt("trial-1 run 2", line, mapped, said, r3, scrub)
             out = err.getvalue().splitlines()
-            self.assertEqual(out[0], "trial-1 run 2 attempt 2: failed (status harness-error, rule 4c) cost unpriced, "
-                                     "spend $1.0000")
+            self.assertEqual(out[0], "trial-1 run 2 attempt 2: failed (status harness-error, rule 4c) cost unpriced")
             self.assertEqual(out[1], "  reason: reason [REDACTED][2J")
             self.assertEqual(out[2], "  claude said: " + expect)
             self.assertEqual(len(out), 3)

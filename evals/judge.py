@@ -185,11 +185,11 @@ def _safe(text) -> str:
     return _UNPRINTABLE.sub("", str(text)).encode("utf-8", "backslashreplace").decode("utf-8")
 
 
-def report_attempt(prefix, line, mapped, said, r3, scrub, suffix=""):
+def report_attempt(prefix, line, mapped, said, r3, scrub):
     """Everything one attempt prints on stderr: the progress line, the reason and what the CLI said."""
     cost = "unpriced" if line["cost_usd"] is None else "$%.4f" % line["cost_usd"]
     print(f"{prefix} attempt {line['attempt']}: {line['outcome']} (status {line['status']}, rule {line['status_rule']}) "
-          f"cost {cost}{suffix}", file=sys.stderr)
+          f"cost {cost}", file=sys.stderr)
     if line["outcome"] != "complete":
         reason = f"R3 stop: {r3}" if r3 else mapped.reason
         if not r3 and line["outcome"] == "schema-failure" and (mapped.status, mapped.rule) == ("ok", "11"):
